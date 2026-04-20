@@ -15,15 +15,17 @@ WAIT = 0.25 # Check actual API limits
 
 def get_metrics( symbol ):
     try:
+        # Get data from Yahoo API
         ticker = yf.Ticker( symbol )
         info = ticker.get_info()
 
+        # Check valuation, drop if under valuation minimum
         market_cap = clean_float(info.get("marketCap"))
 
-        # Drop if under valuation minimum
         if market_cap is None or market_cap < MIN_VALUATION:
             return None
 
+        # Get metrics, make sure they are floats, and drop if NO metrics found
         beta = clean_float(info.get("beta"))
         ps = clean_float(info.get("priceToSalesTrailing12Months"))
         pe = clean_float(info.get("trailingPE"))
@@ -33,10 +35,10 @@ def get_metrics( symbol ):
 
         metrics = [beta, ps, pe, eps, vol, target]
 
-        # Drop if no metrics returned
         if all( metric is None for metric in metrics ):
             return None
 
+        # Return list with metrics
         return {
             "ticker": symbol,
             "beta": beta,
@@ -47,26 +49,33 @@ def get_metrics( symbol ):
             "avg_volume": vol,
             "target_1y_mean": target,
         }
+    
     except Exception as e:
         print(f"Failed {symbol}: {e}")
         return None
 
 def clean_float( x ):
     try:
+        # Cleans infinity
         if x in [None, "Infinity"]:
             return None # Change to max float?
+        
+        # Ensures float
         return float( x )
+    
     except:
         return None
 
 def get_symbols():
+    # Load file
     with open( TICKERS, "r" ) as file:
         data = json.load( file )
 
+    # Return list of all tickers
     return [stock["ticker"] for stock in data.values() ]
 
 def main():
-
+    # Get all tickers
     symbols = get_symbols()
     print(f"{len( symbols )} tickers have been imported.")
 
@@ -77,6 +86,7 @@ def main():
         symbols = random.sample( symbols, TICKER_COUNT )
         print(f"Tickers reduced to {TICKER_COUNT} for testing")
 
+    # Get data for each ticker symbol
     for symbol in symbols:
         metrics = get_metrics( symbol )
         
@@ -88,6 +98,7 @@ def main():
         if ( TESTING ):
             print(f"{symbol} imported")
 
+    # Create data frame
     df = pd.DataFrame( data )
     df = df.set_index( "ticker" )
 
