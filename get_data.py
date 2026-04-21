@@ -1,56 +1,75 @@
 import yfinance as yf
 import pandas as pd
+import pickle
 import random
 import time
 import json
 import os
 
-OUTPUT = "stock_metrics.parquet"
-TICKERS = "company_tickers.json"
+RAW_FILE = "data/raw_data.parquet"
+DATA_FILE = "data/data.parquet"
+TICKERS = "data/company_tickers.json"
+
 MIN_VALUATION = 10_000_000 # Drops stocks below threashold
 BATCH_SIZE = 10
 PERIOD = "5y"
-
-TESTING = True # Limits symbols, debugging messages
 TICKER_COUNT = 20 # Number of symbols loaded (random sampling)
-WAIT = 0.25 # Check actual API limits
+TIME_WINDOWS = {
+    "1d": 1,
+    "1w": 5,
+    "1m": 21,
+    "6m": 126,
+    "1y": 251,
+    "3y": 753,
+    "5y": 1254
+}
 
-def get_data( batch ):
+def get_data( symbols ):
     try:
-        df = yfinance.download( batch, period=PERIOD )
+        all_data = []
 
-        for symbol in batch:
-            data = df[symbol]
-            
-            for time_span in 
-
-
-
-        return {
-            "ticker": symbol,
-            "beta": beta,
-            "ps_ratio": ps,
-            "pe_ratio": pe,
-            "market_cap": market_cap,
-            "eps_ttm": eps,
-            "avg_volume": vol,
-            "target_1y_mean": target,
-        }
-    except Exception as e:
-        print(f"Failed {symbol}: {e}")
-        return None
-
-def clean_float( x ):
-    try:
-        # Cleans infinity
-        if x in [None, "Infinity"]:
-            return None # Change to max float?
+        # Add each df from each batch to a list
+        for batch in chunk_list( symbols, BATCH_SIZE):
+            df = yf.download( batch, period=PERIOD, auto_adjust=True )
+            all_data.append( df )
         
-        # Ensures float
-        return float( x )
-    
-    except:
+        # Turn list of df into single df
+        raw_df = pd.concat( all_data, axis=1 )
+
+        raw_df.to_parquet( RAW_FILE )
+        return raw_df
+
+    except Exception as e:
+        print(f"Failed to get Data: {e}")
         return None
+
+def add_returns( series ):
+    row = {}
+
+    series.dropna()
+
+    if len(series) == 0:
+        return {f"ret_{label}": None for label in TIME_WINDOWS.keys()}
+    
+    end = series.iloc[-1]
+
+    for label, span in TIME_WINDOWS.items():
+            if len(series) <= span:
+                row[f"ret_{label}"] = None
+                continue
+            
+            start = series.iloc[-(span + 1)]
+
+            if start == 0 or pd.isna( start ):
+                row[f"ret_{label}"] = None
+            
+            row[f"ret_{label}"] = ( end / start ) - 1
+
+    return row
+
+def add_monotonic( df ):
+    return df
+
 
 def get_symbols():
     # Load file
@@ -61,45 +80,61 @@ def get_symbols():
     return [stock["ticker"] for stock in data.values() ]
 
 def chunk_list( lst, size ):
+    # Generator to get subsets of a list
     for i in range( 0, len(lst), size ):
         yield lst[i:i + size]
+
+def build_features( raw_df ):
+    # Extract Close prices only (auto adjusted)
+    close = raw_df["Close"]
+
+    # Convert from wide (tickers as columns) → long format
+    results = []
+
+    for ticker in close.columns:
+        series = close[ticker].dropna()
+
+        if len( series ) < 300:
+            continue
+        
+        row = { "ticker": ticker }
+
+        # Calculate Returns
+        row.update( add_returns( series ) )
+
+        results.append( row )
+
+    return pd.DataFrame( results )
 
 def main():
     # Get all tickers
     symbols = get_symbols()
-    print(f"{len( symbols )} tickers have been imported.")
-
-    data = []
+    print(f"{len( symbols )} tickers have been imported.\n")
 
     # Reduce to limited number of symbols if testing
-    if ( TESTING ):
-        symbols = random.sample( symbols, TICKER_COUNT )
-        print(f"Tickers reduced to {TICKER_COUNT} for testing")
+    symbols = random.sample( symbols, TICKER_COUNT )
+    print(f"Tickers reduced to {len( symbols )} for testing\n")
 
-    # Get batches of ticker symbols
-    for batch in chunk_list(symbols, BATCH_SIZE):
-        print(f"{len( batch) } tickers in batch: {batch}")
+    # Get raw data
+    if os.path.isfile( RAW_FILE ):
+        # Data from file
+        raw_df = pd.read_parquet( RAW_FILE )
+        print( "Existing raw data found..." )
+    else:
+        # Download data
+        raw_df = get_data( symbols )
 
-        rates_of_return = get_data( batch )
-
-        # Don't append if None
-        if rates_of_return:
-            data.append( rates_of_return )
+        # Confirm dataframe
+        if raw_df is not None:
+            print( "Raw data download sucessfull..." )
+        else:
+            print( "Raw data download failed." )
+            return
         
-        time.sleep( WAIT )  # API ban prevention
+    # Calculate returns from raw data
+    data = build_features( raw_df )
 
-        if ( TESTING ):
-            print(f"{batch} imported")
-
-    # Create data frame
-    df = pd.DataFrame( data )
-    df = df.set_index( "ticker" )
-
-    # Save to Parquet
-    df.to_parquet( OUTPUT, engine="pyarrow" )
-
-    print(f"{ len( data ) } tickers imported.")
-    print(f"Saved to {OUTPUT}")
+    data.to_parquet( DATA_FILE )
 
 if __name__ == "__main__":
     main()
