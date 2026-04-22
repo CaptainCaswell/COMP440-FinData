@@ -12,7 +12,7 @@ TICKERS = "data/company_tickers.json"
 
 MIN_VALUATION = 10_000_000 # Drops stocks below threashold
 BATCH_SIZE = 10
-PERIOD = "5y"
+PERIOD = "15y"
 TICKER_COUNT = 20 # Number of symbols loaded (random sampling)
 TIME_WINDOWS = {
     "1d": 1,
@@ -31,6 +31,8 @@ def get_data( symbols ):
         # Add each df from each batch to a list
         for batch in chunk_list( symbols, BATCH_SIZE):
             df = yf.download( batch, period=PERIOD, auto_adjust=True )
+            df = df["Close"]
+
             all_data.append( df )
         
         # Turn list of df into single df
@@ -43,27 +45,26 @@ def get_data( symbols ):
         print(f"Failed to get Data: {e}")
         return None
 
-def add_returns( series ):
+def add_returns( series, i ):
     row = {}
 
-    series.dropna()
+    current_price = series.iloc[i]
 
-    if len(series) == 0:
-        return {f"ret_{label}": None for label in TIME_WINDOWS.keys()}
-    
-    end = series.iloc[-1]
+    if pd.isna( current_price ) or current_price == 0:
+        return None
 
     for label, span in TIME_WINDOWS.items():
-            if len(series) <= span:
+            if i - span < 0:
                 row[f"ret_{label}"] = None
                 continue
             
-            start = series.iloc[-(span + 1)]
+            past_price = series.iloc[i - span]
 
-            if start == 0 or pd.isna( start ):
+            if pd.isna( past_price ) or past_price == 0:
                 row[f"ret_{label}"] = None
+                continue
             
-            row[f"ret_{label}"] = ( end / start ) - 1
+            row[f"ret_{label}"] = ( current_price / past_price ) - 1
 
     return row
 
@@ -72,37 +73,51 @@ def add_monotonic( df ):
 
 
 def get_symbols():
+    # For testing, small sample
+    return ["AAPL", "MSFT"]
+    '''
     # Load file
     with open( TICKERS, "r" ) as file:
         data = json.load( file )
 
     # Return list of all tickers
     return [stock["ticker"] for stock in data.values() ]
+    '''
 
 def chunk_list( lst, size ):
     # Generator to get subsets of a list
     for i in range( 0, len(lst), size ):
         yield lst[i:i + size]
 
-def build_features( raw_df ):
-    # Extract Close prices only (auto adjusted)
-    close = raw_df["Close"]
-
+def build_features( close ):
     # Convert from wide (tickers as columns) → long format
     results = []
+
+    lookback = max( TIME_WINDOWS.values() )
+    future = 1254
 
     for ticker in close.columns:
         series = close[ticker].dropna()
 
-        if len( series ) < 300:
+        if len( series ) < 3000:
             continue
-        
-        row = { "ticker": ticker }
 
-        # Calculate Returns
-        row.update( add_returns( series ) )
+        # Starting with enough data to look back on, iterate until only enough left to check future
+        for i in range( lookback, len( series ) - future ):
+            row = {
+                "ticker": ticker,
+                "date": series.index[i],
+                "price": series.iloc[i]
+            }
 
-        results.append( row )
+            returns = add_returns( series, i )
+
+            if returns is None:
+                continue
+
+            # Calculate returns
+            row.update( returns )
+            results.append( row )
 
     return pd.DataFrame( results )
 
@@ -111,9 +126,8 @@ def main():
     symbols = get_symbols()
     print(f"{len( symbols )} tickers have been imported.\n")
 
-    # Reduce to limited number of symbols if testing
-    symbols = random.sample( symbols, TICKER_COUNT )
-    print(f"Tickers reduced to {len( symbols )} for testing\n")
+    # Get random selection from symbols
+    # symbols = random.sample( symbols, TICKER_COUNT )
 
     # Get raw data
     if os.path.isfile( RAW_FILE ):
