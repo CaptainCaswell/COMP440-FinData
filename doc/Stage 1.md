@@ -1,6 +1,6 @@
 # COMP 440 - FinData
 
-## Stage 1 - Data Collection
+## Data Collection
 
 ### Training Data
 
@@ -16,7 +16,7 @@ Selected stocks will be chosen to be used as test data.
 
 The SP500 will be used to benchmark any algorithms created. The goal is to have returns consistently higher than the SP500.
 
-## Stage 2 - Data Creation
+## Data Creation
 
 ### Ideas
 
@@ -31,47 +31,22 @@ In order to evaluate stocks, several metrics will be calculated from the downloa
 * 1 year
 * 3 years
 * 5 years
+* 5 years after
 
 #### Monotonic
 
-Point per period where it's monotonic?
+Comparing each window, this checks to see if the returns were higher than the last window. A score of 1 is given for each period, then normalized to a range of 0 to 1.
 
-% return higher than last returns
-Raw returns higher than all other returns
+As this is only looking at each window, there is a lot of "noise" in these results. It may make more sense to switch to looking at day to day prices, comparing how often there is growth versus how often there is loss (1 =  always increasing, 0 =  always dropping).
 
 #### Max Drawdown
 
-A measure of the stocks worst crash.
-
-```python
-rolling_max = df["Close"].cummax()
-drawdown = df["Close"] / rolling_max - 1
-max_drawdown = drawdown.min()
-```
-
-#### % above 200 day moving average
-
-Measures how often a stock is beating it's long term trend.
-
-```python
-ma200 = df["Close"].rolling(200).mean()
-above = df["Close"] > ma200
-percent_above_200ma = above.mean()
-```
+This is calculated on a 1 year and 5 year window for each row. It compares each days price to the stocks maximum price that has been seen at that point. This finds the largest drop in stock price for that window. This is normalized by using a percentage.
 
 #### Trend Slope
 
-```python
-import numpy as np
+Again with a 1 year and 5 year window, this uses linear regression to find the best fit slope. Logarithmic prices were used to normalize the data.
 
-x = np.arange(len(df))
-y = df["Close"].values
+## Data Structure
 
-slope = np.polyfit(x, y, 1)[0]
-```
-
-#### Volume Stability
-
-```python
-vol_stability = df["Volume"].std() / df["Volume"].mean()
-```
+Each ticker symbol has multiple records, each with different dates. The date signifies the start of the window for each row. Each window contains data for each of the above data creation metrics.
