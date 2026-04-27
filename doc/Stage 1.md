@@ -49,4 +49,22 @@ Again with a 1 year and 5 year window, this uses linear regression to find the b
 
 ## Data Structure
 
-Each ticker symbol has multiple records, each with different dates. The date signifies the start of the window for each row. Each window contains data for each of the above data creation metrics.
+Each ticker ticker symbol has multiple records, each with different dates. The date signifies the start of the window for each row. Each window contains data for each of the above data creation metrics. Below is a table with an example record:
+
+| ticker | date | price | future_5_y_return | ret_1d | ret_1w | ret_1m | ret_6m | ret_1y | ret_3y | ret_5y | monotonic_score | monotonic_score_daily | 1y_drawdown | 5y_drawdown | 1y_drawdown | 1y_trend | 5y_trend |
+| ------ | ---- | ----- | ----------------- | ------ | ------ | ------ | ------ | ------ | ------ | ------ | --------------- | --------------------- | ----------- | ----------- | ----------- | -------- | -------- |
+| AIRI   | 2016-04-19T00:00.000Z | 55.5 | -0.765765765765765 | -0.034782608695652195 | -0.07499999999999996 | -0.05932203389830504 | -0.3629188901462078 | -0.43912647244320324 | 0.07268248035527947 | 1.1874399023146447 | 0.5 | 0.2753391859537111 | -0.44596720280862545 | -0.678423176328976 | -0.0022368426433517054 | 0.0011264210263270099 |
+
+| Column | Description |
+| ------ | ----------- |
+| ticker | The ticker symbol of the stock. Repeated for each date window. |
+| date | The start date of each window. Dates repeated for different stocks |
+| price | The price of a single share |
+| future_5y_return | The percentage return for a stock in a 5 year window after main 5 year window |
+| ret_?? | The percentage returns for a given time period |
+| monotonic_score | Percentage of periods that are increasing (monotonic) |
+| monotonic_score_daily | Percentage of days that are increasing (monotonic) |
+| 1y_drawdown | The max drawdown in a 1 year window |
+| 5y_drawdown | The max drawdown in a 5 year window |
+| 1y_trend | The best fit slope in a 1 year window |
+| 5y_trend | The best fit slope in a 5 year window |
