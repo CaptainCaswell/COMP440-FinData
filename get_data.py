@@ -13,6 +13,7 @@ from datetime import datetime
 RAW_FILE = "data/raw_data.parquet"
 DATA_FILE = "data/data.parquet"
 TICKERS_FILE = "data/company_tickers.json"
+SECTOR_FILE = "data/sector_map.json"
 
 TIME_WINDOWS = {
     "1d": 1,
@@ -24,9 +25,10 @@ TIME_WINDOWS = {
     "5y": 1254
 }
 
+WINDOW_STRIDE = 5
 BATCH_SIZE = 20 # How many tickers to download at one time
 PERIOD = "15y" # Total length of data downloaded
-TICKER_COUNT = 100 # Number of symbols loaded (random sampling)
+TICKER_COUNT = 10 # Number of symbols loaded (random sampling)
 MIN_ROWS = 3574 # How much data a ticker must have after removing bad values (5% loss)
 LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
@@ -54,6 +56,19 @@ def get_symbols() -> List[str]:
     except json.JSONDecodeError:
         print( f"Error: Invalid JSON in {TICKERS_FILE}" )
         return []
+    
+def load_sector_map() -> dict:
+    if os.path.isfile( SECTOR_FILE ):
+        try:
+            with open( SECTOR_FILE, "r" ) as f:
+                return json.load( f )
+        except Exception:
+            return {}
+    return {}
+
+def save_sector_map( sector_map: dict ):
+    with open( SECTOR_FILE, "w" ) as f:
+        json.dump( sector_map, f )
 
 def get_data( symbols: List[str] ) -> Optional[pd.DataFrame]:
     # Download stock data from random sample of symbols
@@ -105,7 +120,7 @@ def get_data( symbols: List[str] ) -> Optional[pd.DataFrame]:
                 added += 1
 
         except Exception as e:
-            print(f"Batch failed: {e}")
+            print( f"Batch failed: {e}" )
 
         print( f"    {added} of {len( batch )} tickers added. Current total is {len(data)}.")
 
@@ -120,46 +135,8 @@ def get_data( symbols: List[str] ) -> Optional[pd.DataFrame]:
 
     return raw_df  
 
-def add_returns( series: pd.Series, i: int ) -> Optional[Dict]:
-    # Get multiple historical returns for a single ticker
-    # Args:
-    #     series: Price series for a ticker
-    #     i: Current index for ticker
-    # Returns: Dictionary with return calculations or None if data insufficient
-
-    if i + FUTURE_DAYS >= len( series ):
-        return None
-
-    future_price = series.iloc[i + FUTURE_DAYS]
-    current_price = series.iloc[i]
-
-    # Guard for very values
-    if pd.isna( current_price ) or current_price <= 0:
-        return None
-    
-    if pd.isna( future_price ) or future_price <= 0:
-        return None
-
-    # Get target value
-    row = { "future_5y_return": ( future_price / current_price ) - 1 }
-
-    # Calculate historical returns for each time window
-    for label, span in TIME_WINDOWS.items():
-            if i - span < 0:
-                row[f"ret_{label}"] = None
-                continue
-            
-            past_price = series.iloc[i - span]
-
-            if pd.isna( past_price ) or past_price <= 0:
-                row[f"ret_{label}"] = None
-                continue
-            
-            row[f"ret_{label}"] = ( current_price / past_price ) - 1
-
-    return row
-
-def add_monotonic( row_data: Dict ) -> float:
+def add_monotonic( row ):
+    # TODO Update
     # Calculate monotonic score (how consistently returns increase for each time window)
     # Args:
     #     row_data: Dictionary containing ticker return values for each window
@@ -169,140 +146,111 @@ def add_monotonic( row_data: Dict ) -> float:
 
     # Get return values
     for label in TIME_WINDOWS.keys():
-        key = f"ret_{label}"
-        if key in row_data and row_data[key] is not None:
-            values.append( row_data[key] )
+        val = row.get( f"ret_{label}" )
+        if pd.notna( val ):
+            values.append( val )
 
     if len( values ) < 2:
         return 0.0
     
-    score = 0
-
-    # Add a point for each monotonic
-    for i in range( 1, len( values ) ):
-        if values[i] >= values[i - 1]:
-            score += 1
-
-    # Normalize score
-    normal_score = score / ( len( values ) - 1 )
+    score = sum(
+        values[i] >= values[i-1]
+        for i in range( 1, len(values) )
+    )
     
-    # Guard against bad score
-    if 0 <= normal_score <= 1:
-        return normal_score
-    
-    return 0.0
+    return score / ( len( values ) - 1 )
 
-def add_monotonic_daily( series: pd.Series ) -> float:
-    # Calculate monotonic score based on day to day changes
-    # Args:
-    #     series: Price series
-    # Returns: Score between 0 and 1 representing monotonic score
-    
-    series = series.dropna()
-
-    if len( series ) < 2:
-        return None
-    
-    # Calculate faily returns
-    daily_returns = series.pct_change().dropna()
-
-    if len( daily_returns ) == 0:
-        return 0.0
-    
-    # Count days where price increased (monotonic)
-    up_days = ( daily_returns > 0 ).sum()
-    total_days = len( daily_returns )
-    
-    return up_days / total_days
-
-def add_drawdown( series: pd.Series ) -> Optional[float]:
-    # Calculate maximum drawdown for a price series
-    # Args:
-    #     series: Price series
-    # Returns: Maximum drawdown as negative percentage or None if insufficient data
-
-    series = series.dropna()
-
-    if len( series ) < 2:
-        return None
-
-    # Get list of maximum value seen
-    running_max = series.cummax()
-
-    # Get list of differences between each running max and current
-    drawdown = ( series / running_max ) - 1
-
-    # Smallest value is largest drawdown
-    max_drawdown = drawdown.min()
-
-    return max_drawdown
-
-def add_trend( series ):
-    # Calculate log trend slope for a price seriues
-    # Args:
-    #     series: Price series
-    # Returns:Trend slope or None if insufficient data
-
-    series = series.dropna()
-
-    if len( series ) < 2:
-        return None
-    
-    x = np.arange( len( series ) )
-    y = np.log( series.values )
-
-    slope, _ = np.polyfit( x, y, 1 )
-
-    return slope
-
-
-
-def build_features( close: pd.DataFrame ) -> pd.DataFrame:
+def build_features( close: pd.DataFrame, sector_map: dict ) -> pd.DataFrame:
     # Build data feature matrix from raw price data
     # Args:
     #     close: DataFrame with closeing prices
     # Returns: Dataframe with calculated features
 
-    results = []
-
+    df_list = []
     min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
 
     for ticker in close.columns:
-        series = close[ticker].dropna()
+        # Create copy of that ticker
+        series = close[ticker].copy()
+
+        # Remove empty
+        series = series.dropna()
+
+        # Sort
+        series = series.sort_index()
 
         # Make sure there is enough data for minimum 500 windows
         if len( series ) < min_length:
             print( f"    Skipping {ticker}: Only {len(series)} rows ({min_length} needed)" )
             continue
 
-        # Starting with enough data to look back on, iterate until only enough left to check future
-        for i in range( LOOKBACK_DAYS, len( series ) - FUTURE_DAYS ):
-            row = {
-                "ticker": ticker,
-                "date": series.index[i],
-                "price": series.iloc[i]
-            }
+        # Base DataFrame
+        df = pd.DataFrame( index=series.index )
+        df["ticker"] = ticker
+        df["price"] = series
+        df["sector"] = get_sector( ticker, sector_map )
 
-            row_data = add_returns( series, i )
+        # Future Price
+        df["future_5y_return"] = ( df["price"].shift( -TIME_WINDOWS["5y"] ) / df["price"] - 1 )
 
-            # Skip row if no data
-            if row_data is None:
-                continue
+        # Returns
+        for label, span in TIME_WINDOWS.items():
+            df[f"ret_{label}"] = df["price"].pct_change( span )
 
-            row_data["monotonic_score"] = add_monotonic( row_data )
-            row_data["monotonic_score_daily"] = add_monotonic_daily( series[i - 1254: i] )
-            row_data["1y_drawdown"] = add_drawdown( series[i - 252: i] )
-            row_data["5y_drawdown"] = add_drawdown( series[i - 1254: i] )
-            row_data["1y_trend"] = add_trend( series[i - 252 : i] )
-            row_data["5y_trend"] = add_trend( series[i - 1254 : i] )
+        # Monotonic
+        df["monotonic_score_daily"] = (
+            df["price"].pct_change().gt( 0 )
+            .rolling( TIME_WINDOWS["1y"] )
+            .mean()
+        )
 
-            # Calculate returns
-            row.update( row_data )
-            results.append( row )
+        df["monotonic_score"] = df.apply( add_monotonic, axis=1 )
 
-        print( f"    {ticker}: {len(series) - LOOKBACK_DAYS - FUTURE_DAYS:,} rows processed" ) # TODO Use len(row) instead?
+        # Drawdown
+        rolling_max_1y = df["price"].rolling( TIME_WINDOWS["1y"] ).max()
+        df["1y_drawdown"] = df["price"] / rolling_max_1y - 1
 
-    return pd.DataFrame( results )
+        rolling_max_5y = df["price"].rolling( TIME_WINDOWS["5y"] ).max()
+        df["5y_drawdown"] = df["price"] / rolling_max_5y - 1
+
+        # Trend
+        log_price = np.log( df["price"] )
+
+        def slope(x):
+            return np.polyfit( np.arange(len(x)), x, 1 )[0]
+
+        df["1y_trend"] = log_price.rolling( TIME_WINDOWS["1y"] ).apply( slope, raw=True )
+        df["5y_trend"] = log_price.rolling( TIME_WINDOWS["5y"] ).apply( slope, raw=True )
+
+        # Switch sectors to numeric dummies
+        sector_dummies = pd.get_dummies( df["sector"], prefix="sector" ).astype( "int8" )
+        df = pd.concat( [df, sector_dummies], axis=1 )
+        df = df.drop( columns=["sector"] )
+
+        # Clean
+        df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
+
+        # Reduce rows
+        df = df.iloc[::WINDOW_STRIDE]
+
+        df_list.append( df )
+
+        print( f"    {ticker}: {len(df)} rows processed" )
+
+    return pd.concat( df_list, axis=0 )
+
+def get_sector( ticker: str, sector_map: dict ) -> str | None:
+    if ticker in sector_map:
+        return sector_map[ticker]
+    
+    try:
+        info = yf.Ticker( ticker ).info
+        sector = info.get( "sector", None )
+    except Exception:
+        sector = None
+    
+    sector_map[ticker] = sector
+    return sector
 
 def main():
     # Get starting time
@@ -316,6 +264,7 @@ def main():
         print(f"Loading existing raw data from {RAW_FILE}...")
         raw_df = pd.read_parquet(RAW_FILE)
         print(f"  Loaded {len(raw_df.columns)} tickers, {len(raw_df)} rows\n")
+        # TODO Check for quantity, prompt user if different
     else:
         print("No existing raw data found. Downloading...")
 
@@ -334,12 +283,19 @@ def main():
             print( "Raw data download failed. Existing." )
         
         print( "Raw data download successful!\n" )
-        
+    
+    # Load Sector Map
+    sector_map = load_sector_map()
+
     # Calculate returns from raw data
     print( "=" * 60 )
-    data = build_features( raw_df )
+    data = build_features( raw_df, sector_map )
+    data = data.reset_index()
+    data = data.rename( columns={"Date": "date"})
 
+    # Save data
     data.to_parquet( DATA_FILE )
+    save_sector_map( sector_map )
     
     # Summary statistics
     end_time = datetime.now()
@@ -355,11 +311,7 @@ def main():
     print( f"Duration: {duration:.1f} seconds" )
     print( f"Memory usage: {data.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
     
-    # Show sample of null values
-    null_counts = data.isnull().sum()
-    if null_counts.any():
-        print( "\nNull value counts:" )
-        print( null_counts[null_counts > 0] )
+    print(data.filter(like="sector_").dtypes)
 
 if __name__ == "__main__":
     main()
