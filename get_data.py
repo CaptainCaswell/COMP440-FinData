@@ -11,9 +11,10 @@ from datetime import datetime
 
 # Files
 RAW_FILE = "data/raw_data.parquet"
-DATA_FILE = "data/data.parquet"
+STOCK_FILE = "data/data.parquet"
+SECTOR_FILE = "data/sector.parquet"
 TICKERS_FILE = "data/company_tickers.json"
-SECTOR_FILE = "data/sector_map.json"
+SECTOR_MAP_FILE = "data/sector_map.json"
 
 TIME_WINDOWS = {
     "1d": 1,
@@ -37,6 +38,10 @@ MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
 def ensure_data_directory():
     # Create bath if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
+
+def save_sector_map( sector_map: dict ):
+    with open( SECTOR_FILE, "w" ) as f:
+        json.dump( sector_map, f )
 
 def get_symbols() -> List[str]:
     # Load tickers from file
@@ -65,10 +70,6 @@ def load_sector_map() -> dict:
         except Exception:
             return {}
     return {}
-
-def save_sector_map( sector_map: dict ):
-    with open( SECTOR_FILE, "w" ) as f:
-        json.dump( sector_map, f )
 
 def get_data( symbols: List[str] ) -> Optional[pd.DataFrame]:
     # Download stock data from random sample of symbols
@@ -225,7 +226,6 @@ def build_features( close: pd.DataFrame, sector_map: dict ) -> pd.DataFrame:
         # Switch sectors to numeric dummies
         sector_dummies = pd.get_dummies( df["sector"], prefix="sector" ).astype( "int8" )
         df = pd.concat( [df, sector_dummies], axis=1 )
-        df = df.drop( columns=["sector"] )
 
         # Clean
         df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
@@ -251,6 +251,121 @@ def get_sector( ticker: str, sector_map: dict ) -> str | None:
     
     sector_map[ticker] = sector
     return sector
+
+def build_sector( data: pd.DataFrame) -> pd.DataFrame:
+    # Get list of sectors
+    sector_columns = [col for col in data.columns if col.startswith( "sector_" )]
+    
+    # Add MARKET sector
+    sectors = [col.removeprefix("sector_") for col in sector_columns]
+    sectors.append("MARKET")
+
+    sector_rows = []
+
+    # Iterate through sectors
+    for sector in sectors:
+        # Get rows for given sector
+        if sector == "MARKET":
+            sector_df = data
+        else:
+            sector_df = data[data[f"sector_{sector}"] == 1].copy()
+
+        # Skip empty sectors
+        if sector_df.empty:
+            continue
+
+        for date, date_df in sector_df.groupby("date"):
+            row = {
+                # Indentity
+                "date": date,
+                "sector": sector,
+
+                # Size
+                "sector_size": date_df["ticker"].nunique(),
+                "rows": len( date_df ),
+
+                # Average returns
+                "sec_avg_ret_1d": date_df["ret_1d"].mean(),
+                "sec_avg_ret_1w": date_df["ret_1w"].mean(),
+                "sec_avg_ret_1m": date_df["ret_1m"].mean(),
+                "sec_avg_ret_6m": date_df["ret_6m"].mean(),
+                "sec_avg_ret_1y": date_df["ret_1y"].mean(),
+                "sec_avg_ret_3y": date_df["ret_3y"].mean(),
+                "sec_avg_ret_5y": date_df["ret_5y"].mean(),
+
+                # Breadth
+                "sec_breadth_positive_1y": ( date_df["ret_1y"] > 0 ).mean(),
+                "sec_breadth_positive_5y": ( date_df["ret_5y"] > 0 ).mean(),
+
+                # Average Trend
+                "sec_avg_1y_trend": date_df["1y_trend"].mean(),
+                "sec_avg_5y_trend": date_df["5y_trend"].mean(),
+
+                # Percentage of positive trends
+                "sec_positive_1y_trend_pct": ( date_df["1y_trend"] > 0 ).mean(),
+                "sec_positive_5y_trend_pct": ( date_df["5y_trend"] > 0 ).mean(),
+
+                # Average Drawdown
+                "sec_avg_1y_drawdown": date_df["1y_drawdown"].mean(),
+                "sec_avg_5y_drawdown": date_df["5y_drawdown"].mean(),
+
+                # Percentage without large Drawdown
+                "sec_strong_drawdown_resilience": ( date_df["1y_drawdown"] > -0.2 ).mean(),
+
+                # Average Monotonicity
+                "sec_avg_monotonic_score": date_df["monotonic_score"].mean(),
+                "sec_avg_monotonic_score_daily": date_df["monotonic_score_daily"].mean(),
+
+                # Percentage with high Monotonicity
+                "sec_high_monotonic_pct": ( date_df["monotonic_score"] > 0.8 ).mean(),
+
+                # Spread
+                "sec_ret_1y_dispersion": date_df["ret_1y"].std(),
+                "sec_ret_5y_dispersion": date_df["ret_5y"].std(),
+            }
+
+            sector_rows.append( row )
+
+        print( f"    {sector} sector added.")
+
+    return pd.DataFrame( sector_rows )
+
+def build_comparisons( stock_data: pd.DataFrame, sector_data: pd.DataFrame ) -> pd.Dataframe:
+    # Split out market data and rename column heading
+    market_data = sector_data[ sector_data["sector"] == "MARKET"].rename( columns=lambda c: c + "_market" if c not in ["date"] else c )
+    sector_data = sector_data[sector_data["sector"] != "MARKET"]
+
+    # Merge sector and market data with stocks
+    df = stock_data.merge( sector_data, on=["date", "sector"], how="left" )
+    df = df.merge( market_data, on=["date"], how="left" )
+
+    # Sector relative features
+    df["excess_ret_1y"] = df["ret_1y"] - df["sec_avg_ret_1y"]
+    df["excess_ret_5y"] = df["ret_5y"] - df["sec_avg_ret_5y"]
+
+    df["trend_vs_sector_1y"] = df["1y_trend"] - df["sec_avg_1y_trend"]
+    df["trend_vs_sector_5y"] = df["5y_trend"] - df["sec_avg_5y_trend"]
+
+    df["drawdown_rel_1y"] = df["1y_drawdown"] - df["sec_avg_1y_drawdown"]
+    df["drawdown_rel_5y"] = df["5y_drawdown"] - df["sec_avg_5y_drawdown"]
+
+    # Market relative features
+    df["excess_vs_market_1y"] = df["ret_1y"] - df["sec_avg_ret_1y_market"]
+    df["trend_vs_market_1y"] = df["1y_trend"] - df["sec_avg_1y_trend_market"]
+
+    # Risk adjusted strength
+    df["risk_adjusted_1y"] = df["excess_ret_1y"] / df["sec_ret_1y_dispersion"].replace(0, np.nan)
+    df["risk_adjusted_5y"] = df["excess_ret_5y"] / df["sec_ret_5y_dispersion"].replace(0, np.nan)
+
+    # Sector signals
+    df["sector_is_strong"] = df["sec_avg_ret_1y"] > 0
+    df["sector_is_trending"] = df["sec_avg_1y_trend"] > 0
+    df["sector_high_breadth"] = df["sec_breadth_positive_1y"] > 0.6
+
+    # Combined quality score
+    df["quality_score"] = (df["excess_ret_1y"] > 0).astype(int) + (df["trend_vs_sector_1y"] > 0).astype(int) + (df["drawdown_rel_1y"] > 0).astype(int)
+
+    return df
 
 def main():
     # Get starting time
@@ -289,12 +404,26 @@ def main():
 
     # Calculate returns from raw data
     print( "=" * 60 )
-    data = build_features( raw_df, sector_map )
-    data = data.reset_index()
-    data = data.rename( columns={"Date": "date"})
+    print( "Building feature data")
+    print( "=" * 60 )
+    stock_data = build_features( raw_df, sector_map )
+    stock_data = stock_data.reset_index()
+    stock_data = stock_data.rename( columns={"Date": "date"} )
+    print( "" )
+
+    # Build market/sector data
+    print( "=" * 60 )
+    print( "Building sector data")
+    print( "=" * 60 )
+    sector_data = build_sector( stock_data )
+    print( "" )
+
+    # Build comparison data
+    data = build_comparisons( stock_data, sector_data )
 
     # Save data
-    data.to_parquet( DATA_FILE )
+    data.to_parquet( STOCK_FILE )
+    sector_data.to_parquet( SECTOR_FILE )
     save_sector_map( sector_map )
     
     # Summary statistics
@@ -304,14 +433,12 @@ def main():
     print( "\n" + "=" * 60 )
     print( "PIPELINE COMPLETE" )
     print( "=" * 60 )
-    print( f"Output file: {DATA_FILE}" )
-    print( f"Total rows: {len(data):,}" )
+    print( f"Output file: {STOCK_FILE}" )
+    print( f"Total rows: {len( data ):,}" )
     print( f"Unique tickers: {data['ticker'].nunique()}" )
     print( f"Date range: {data['date'].min()} to {data['date'].max()}" )
     print( f"Duration: {duration:.1f} seconds" )
     print( f"Memory usage: {data.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
-    
-    print(data.filter(like="sector_").dtypes)
 
 if __name__ == "__main__":
     main()
