@@ -14,7 +14,6 @@ RAW_FILE = "data/raw_data.parquet"
 STOCK_FILE = "data/data.parquet"
 SECTOR_FILE = "data/sector.parquet"
 TICKERS_FILE = "data/company_tickers.json"
-SECTOR_MAP_FILE = "data/sector_map.json"
 
 TIME_WINDOWS = {
     "1d": 1,
@@ -39,10 +38,6 @@ def ensure_data_directory():
     # Create bath if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
 
-def save_sector_map( sector_map: dict ):
-    with open( SECTOR_MAP_FILE, "w" ) as f:
-        json.dump( sector_map, f )
-
 def get_symbols() -> List[str]:
     # Load tickers from file
     try:
@@ -61,15 +56,27 @@ def get_symbols() -> List[str]:
     except json.JSONDecodeError:
         print( f"Error: Invalid JSON in {TICKERS_FILE}" )
         return []
+
+def get_info( ticker:str, info_map: dict ) -> dict:
+    if ticker in info_map:
+        return info_map[ticker]
     
-def load_sector_map() -> dict:
-    if os.path.isfile( SECTOR_MAP_FILE ):
-        try:
-            with open( SECTOR_MAP_FILE, "r" ) as f:
-                return json.load( f )
-        except Exception:
-            return {}
-    return {}
+    try:
+        info = yf.Ticker( ticker ).info
+
+        fundamentals = {
+            "sector": info.get("sector") or "Unknown",
+            "shares_outstanding": info.get( "sharesOutstanding", None )
+        }
+
+    except Exception:
+        fundamentals = {
+            "sector": "UNKNOWN",
+            "shares_outstanding": None
+        }
+
+    info_map[ticker] = fundamentals
+    return fundamentals
 
 def get_data( symbols: List[str] ) -> Optional[pd.DataFrame]:
     # Download stock data from random sample of symbols
@@ -136,11 +143,10 @@ def get_data( symbols: List[str] ) -> Optional[pd.DataFrame]:
 
     return raw_df  
 
-def add_monotonic( row ):
-    # TODO Update
+def add_monotonic( row: dict ) -> float:
     # Calculate monotonic score (how consistently returns increase for each time window)
     # Args:
-    #     row_data: Dictionary containing ticker return values for each window
+    #     row: Dictionary containing ticker return values for each window
     # Returns: Score between 0 and 1 representing monotonic score
     
     values = []
@@ -161,7 +167,7 @@ def add_monotonic( row ):
     
     return score / ( len( values ) - 1 )
 
-def build_features( close: pd.DataFrame, sector_map: dict ) -> pd.DataFrame:
+def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
     # Build data feature matrix from raw price data
     # Args:
     #     close: DataFrame with closeing prices
@@ -189,7 +195,17 @@ def build_features( close: pd.DataFrame, sector_map: dict ) -> pd.DataFrame:
         df = pd.DataFrame( index=series.index )
         df["ticker"] = ticker
         df["price"] = series
-        df["sector"] = get_sector( ticker, sector_map )
+
+        # Info for DataFrame
+        info = get_info( ticker, info_map )
+        df["sector"] = info["sector"]
+
+        shares = info["shares_outstanding"]
+
+        if shares and shares > 0:
+            df["market_cap"] = df["price"] * shares
+        else:
+            df["market_cap"] = np.nan
 
         # Future Price
         df["future_5y_return"] = ( df["price"].shift( -TIME_WINDOWS["5y"] ) / df["price"] - 1 )
@@ -238,19 +254,6 @@ def build_features( close: pd.DataFrame, sector_map: dict ) -> pd.DataFrame:
         print( f"    {ticker}: {len(df)} rows processed" )
 
     return pd.concat( df_list, axis=0 )
-
-def get_sector( ticker: str, sector_map: dict ) -> str | None:
-    if ticker in sector_map:
-        return sector_map[ticker]
-    
-    try:
-        info = yf.Ticker( ticker ).info
-        sector = info.get( "sector", None )
-    except Exception:
-        sector = None
-    
-    sector_map[ticker] = sector
-    return sector
 
 def build_sector( data: pd.DataFrame) -> pd.DataFrame:
     # Get list of sectors
@@ -437,15 +440,13 @@ def main():
             print( "Raw data download failed. Existing." )
         
         print( "Raw data download successful!\n" )
-    
-    # Load Sector Map
-    sector_map = load_sector_map()
 
     # Calculate returns from raw data
     print( "=" * 60 )
     print( "Building feature data")
     print( "=" * 60 )
-    stock_data = build_features( raw_df, sector_map )
+    info_map = {}
+    stock_data = build_features( raw_df, info_map )
     stock_data = stock_data.reset_index()
     stock_data = stock_data.rename( columns={"Date": "date"} )
     print( "" )
@@ -463,18 +464,8 @@ def main():
     # Build comparison data
     data = build_comparisons( stock_data, sector_data )
 
-    # --- DEBUG: check beta/alpha coverage ---
-    print("\n--- DEBUG beta/alpha ---")
-    for ticker in data["ticker"].unique():
-        sub = data[data["ticker"] == ticker]
-        print(f"{ticker}: {len(sub)} rows, beta non-null={sub['beta_1y'].notna().sum()}, alpha non-null={sub['alpha_1y'].notna().sum()}")
-    print("--- END DEBUG ---\n")
-    # --- END DEBUG ---
-
     # Save data
     data.to_parquet( STOCK_FILE )
-    sector_data.to_parquet( SECTOR_FILE )
-    save_sector_map( sector_map )
     
     # Summary statistics
     end_time = datetime.now()
@@ -489,9 +480,6 @@ def main():
     print( f"Date range: {data['date'].min()} to {data['date'].max()}" )
     print( f"Duration: {duration:.1f} seconds" )
     print( f"Memory usage: {data.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
-
-    df = pd.read_parquet("data/data.parquet")
-    print([c for c in df.columns if "beta" in c or "alpha" in c])
 
 if __name__ == "__main__":
     main()
