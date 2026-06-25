@@ -40,7 +40,7 @@ def ensure_data_directory():
     Path( "data" ).mkdir( exist_ok=True )
 
 def save_sector_map( sector_map: dict ):
-    with open( SECTOR_FILE, "w" ) as f:
+    with open( SECTOR_MAP_FILE, "w" ) as f:
         json.dump( sector_map, f )
 
 def get_symbols() -> List[str]:
@@ -63,9 +63,9 @@ def get_symbols() -> List[str]:
         return []
     
 def load_sector_map() -> dict:
-    if os.path.isfile( SECTOR_FILE ):
+    if os.path.isfile( SECTOR_MAP_FILE ):
         try:
-            with open( SECTOR_FILE, "r" ) as f:
+            with open( SECTOR_MAP_FILE, "r" ) as f:
                 return json.load( f )
         except Exception:
             return {}
@@ -330,7 +330,7 @@ def build_sector( data: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame( sector_rows )
 
-def build_comparisons( stock_data: pd.DataFrame, sector_data: pd.DataFrame ) -> pd.Dataframe:
+def build_comparisons( stock_data: pd.DataFrame, sector_data: pd.DataFrame ) -> pd.DataFrame:
     # Split out market data and rename column heading
     market_data = sector_data[ sector_data["sector"] == "MARKET"].rename( columns=lambda c: c + "_market" if c not in ["date"] else c )
     sector_data = sector_data[sector_data["sector"] != "MARKET"]
@@ -366,6 +366,45 @@ def build_comparisons( stock_data: pd.DataFrame, sector_data: pd.DataFrame ) -> 
     df["quality_score"] = (df["excess_ret_1y"] > 0).astype(int) + (df["trend_vs_sector_1y"] > 0).astype(int) + (df["drawdown_rel_1y"] > 0).astype(int)
 
     return df
+
+def add_market_features(df: pd.DataFrame) -> pd.DataFrame:
+    # Ensure sorted (VERY important for rolling calculations)
+    df = df.sort_values(["ticker", "date"]).copy()
+
+    # Market return = cross-sectional mean per date
+    market_ret = df.groupby("date")["ret_1d"].mean()
+
+    output = []
+
+    for ticker, stock_df in df.groupby("ticker"):
+        stock_df = stock_df.copy()
+
+        # Stock return
+        stock_ret = stock_df["price"].pct_change()
+
+        # Align market return to this ticker's dates
+        market_aligned = market_ret.reindex(stock_df["date"].values).values
+
+        aligned = pd.DataFrame({
+            "stock": stock_ret.values,
+            "market": market_aligned
+        })
+
+        # Rolling beta
+        rolling_cov = ( aligned["stock"].rolling(251, min_periods=50).cov(aligned["market"]) )
+
+        rolling_var = ( aligned["market"].rolling(251, min_periods=50).var() )
+
+        beta = rolling_cov / rolling_var
+
+        stock_df["beta_1y"] = beta.values
+
+        # Alpha
+        stock_df["alpha_1y"] = ( aligned["stock"].values - stock_df["beta_1y"].values * aligned["market"].values )
+
+        output.append(stock_df)
+
+    return pd.concat(output, axis=0)
 
 def main():
     # Get starting time
@@ -411,6 +450,9 @@ def main():
     stock_data = stock_data.rename( columns={"Date": "date"} )
     print( "" )
 
+    # Add market features
+    stock_data = add_market_features( stock_data )
+
     # Build market/sector data
     print( "=" * 60 )
     print( "Building sector data")
@@ -420,6 +462,14 @@ def main():
 
     # Build comparison data
     data = build_comparisons( stock_data, sector_data )
+
+    # --- DEBUG: check beta/alpha coverage ---
+    print("\n--- DEBUG beta/alpha ---")
+    for ticker in data["ticker"].unique():
+        sub = data[data["ticker"] == ticker]
+        print(f"{ticker}: {len(sub)} rows, beta non-null={sub['beta_1y'].notna().sum()}, alpha non-null={sub['alpha_1y'].notna().sum()}")
+    print("--- END DEBUG ---\n")
+    # --- END DEBUG ---
 
     # Save data
     data.to_parquet( STOCK_FILE )
@@ -439,6 +489,9 @@ def main():
     print( f"Date range: {data['date'].min()} to {data['date'].max()}" )
     print( f"Duration: {duration:.1f} seconds" )
     print( f"Memory usage: {data.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
+
+    df = pd.read_parquet("data/data.parquet")
+    print([c for c in df.columns if "beta" in c or "alpha" in c])
 
 if __name__ == "__main__":
     main()
