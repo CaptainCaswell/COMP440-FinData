@@ -1,2 +1,5 @@
 *.parquet
 /.venv
+/logs
+*.csv
+*.out
