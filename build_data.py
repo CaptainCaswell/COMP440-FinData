@@ -103,6 +103,8 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
     daily_returns = close.pct_change()
     market_daily_ret = daily_returns.mean(axis=1)
 
+    stride_dates = set( close.index[::WINDOW_STRIDE] )
+
     for i, ticker in enumerate( close.columns, 1 ):
         # Create copy of that ticker
         series = close[ticker].copy()
@@ -198,7 +200,7 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
         df = df.dropna( subset=core_cols )
 
         # Reduce rows
-        df = df.iloc[::WINDOW_STRIDE]
+        df = df[df.index.isin( stride_dates )]
 
         df_list.append( df )
 
