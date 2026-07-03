@@ -97,12 +97,13 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
 
     df_list = []
     min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
+    total = len( close.columns )
 
     # Daily market return
     daily_returns = close.pct_change()
     market_daily_ret = daily_returns.mean(axis=1)
 
-    for ticker in close.columns:
+    for i, ticker in enumerate( close.columns, 1 ):
         # Create copy of that ticker
         series = close[ticker].copy()
 
@@ -114,7 +115,7 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
 
         # Make sure there is enough data for minimum 500 windows
         if len( series ) < min_length:
-            print( f"    Skipping {ticker}: Only {len(series)} rows ({min_length} needed)" )
+            print( f"    [{i}/{total}] Skipping {ticker}: Only {len(series)} rows ({min_length} needed)" )
             continue
 
         # Base DataFrame
@@ -201,7 +202,7 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
 
         df_list.append( df )
 
-        print( f"    {ticker}: {len(df)} rows processed" )
+        print( f"    [{i}/{total}] {ticker}: {len(df)} rows processed" )
 
     result = pd.concat( df_list, axis=0 )
 
