@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
 
 # Files
 RAW_FILE = "data/raw_data.parquet"
@@ -34,6 +36,7 @@ MIN_ROWS = 3574 # How much data a ticker must have after removing bad values (5%
 LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
 MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
+MIN_PRICE = 0.10
 
 def ensure_data_directory():
     # Create bath if it doesn't exist
@@ -64,6 +67,92 @@ def get_info( ticker: str, info_map: dict ) -> dict:
         "trailing_pe": None,
     } )
 
+def process_ticker( ticker: str, series: pd.Series, market_daily_ret: pd.Series, info_map: dict ) -> Optional[pd.DataFrame]:
+    min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
+
+    series = series.dropna().sort_index()
+
+    if len( series ) < min_length:
+        return None
+    
+
+    df = pd.DataFrame( index=series.index )
+    df["ticker"] = ticker
+    df["price"] = series
+
+    # Alpha/Beta
+    stock_ret = df["price"].pct_change()
+    market_ret_aligned = market_daily_ret.reindex( df.index )
+
+    rolling_cov = stock_ret.rolling(TIME_WINDOWS["1y"], min_periods=50).cov(market_ret_aligned)
+    rolling_var = market_ret_aligned.rolling(TIME_WINDOWS["1y"], min_periods=50).var()
+
+    df["beta_1y"] = rolling_cov / rolling_var
+    df["alpha_1y"] = stock_ret - df["beta_1y"] * market_ret_aligned
+
+    # Info
+    info = get_info( ticker, info_map )
+    df["sector"] = info["sector"]
+
+    # Market Cap
+    shares = info["shares_outstanding"]
+
+    if shares and shares > 0:
+        market_cap = df["price"] * shares
+        df["log_market_cap"] = np.log( market_cap )
+    else:
+        df["log_market_cap"] = np.nan
+
+    # PE Ratio
+    trailing_pe = info["trailing_pe"]
+    current_price = series.iloc[-1]
+
+    if trailing_pe and trailing_pe > 0:
+        eps_now = current_price / trailing_pe
+        df["pe"] = df["price"] / eps_now
+    else:
+        df["pe"] = np.nan
+
+    # Future Price
+    df["future_5y_return"] = ( df["price"].shift( -TIME_WINDOWS["5y"] ) / df["price"] - 1 )
+
+    # Returns
+    for label, span in TIME_WINDOWS.items():
+        df[f"ret_{label}"] = df["price"].pct_change( span )
+
+    # Monotonic
+    df["monotonic_score_daily"] = (
+        df["price"].pct_change().gt( 0 )
+        .rolling( TIME_WINDOWS["1y"] )
+        .mean()
+    )
+
+    df["monotonic_score"] = df.apply( add_monotonic, axis=1 )
+
+    # Drawdown
+    rolling_max_1y = df["price"].rolling( TIME_WINDOWS["1y"] ).max()
+    df["1y_drawdown"] = df["price"] / rolling_max_1y - 1
+
+    rolling_max_5y = df["price"].rolling( TIME_WINDOWS["5y"] ).max()
+    df["5y_drawdown"] = df["price"] / rolling_max_5y - 1
+
+    # Trend
+    log_price = np.log( df["price"] )
+
+    def slope(x):
+        return np.polyfit( np.arange(len(x)), x, 1 )[0]
+
+    df["1y_trend"] = log_price.rolling( TIME_WINDOWS["1y"] ).apply( slope, raw=True )
+    df["5y_trend"] = log_price.rolling( TIME_WINDOWS["5y"] ).apply( slope, raw=True )
+
+    # Clean
+    df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
+
+    # Drop if core stats not available
+    core_cols = ["price", "beta_1y", "alpha_1y", "future_5y_return", "1y_trend", "5y_trend", "monotonic_score_daily"]
+    df = df.dropna( subset=core_cols )
+
+    return df
 
 def add_monotonic( row: dict ) -> float:
     # Calculate monotonic score (how consistently returns increase for each time window)
@@ -95,116 +184,44 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
     #     close: DataFrame with closeing prices
     # Returns: Dataframe with calculated features
 
-    df_list = []
-    min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
-    total = len( close.columns )
-
     # Daily market return
     daily_returns = close.pct_change()
     market_daily_ret = daily_returns.mean(axis=1)
 
     stride_dates = set( close.index[::WINDOW_STRIDE] )
 
-    for i, ticker in enumerate( close.columns, 1 ):
-        # Create copy of that ticker
-        series = close[ticker].copy()
+    df_list = []
+    total = len( close.columns )
+    
+    n_workers = max( mp.cpu_count() - 1, 1 )
+    print( f"Processing {total} tickers using {n_workers} processes..." )
+    
+    # min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
+    
+    with ProcessPoolExecutor( max_workers=n_workers ) as executor:
+        futures = {
+            executor.submit( process_ticker, ticker, close[ticker], market_daily_ret, into_map ): ticker
+            for ticker in close.columns
+        }
+    
 
-        # Remove empty
-        series = series.dropna()
+        for i, future in enumerate( as_completed( futures ), 1 ):
+            ticker = futures[future]
 
-        # Sort
-        series = series.sort_index()
+            try:
+                df = future.result()
+            except Exception as e:
+                print( f"    [{i}/{total}] {ticker}: FAILED ({e})" )
+                continue
 
-        # Make sure there is enough data for minimum 500 windows
-        if len( series ) < min_length:
-            print( f"    [{i}/{total}] Skipping {ticker}: Only {len(series)} rows ({min_length} needed)" )
-            continue
+            if df is None or df.empty:
+                print( f"    [{i}/{total}] Skipping {ticker}: insufficient data" )
+                continue
 
-        # Base DataFrame
-        df = pd.DataFrame( index=series.index )
-        df["ticker"] = ticker
-        df["price"] = series
+            df = df[df.index.isin( stride_dates )]
+            df_list.append( df )
 
-        # Alpha/Beta
-        stock_ret = df["price"].pct_change()
-        market_ret_aligned = market_daily_ret.reindex(df.index)
-
-        rolling_cov = stock_ret.rolling(TIME_WINDOWS["1y"], min_periods=50).cov(market_ret_aligned)
-        rolling_var = market_ret_aligned.rolling(TIME_WINDOWS["1y"], min_periods=50).var()
-
-        df["beta_1y"] = rolling_cov / rolling_var
-        df["alpha_1y"] = stock_ret - df["beta_1y"] * market_ret_aligned
-
-        # Info
-        info = get_info( ticker, info_map )
-        df["sector"] = info["sector"]
-
-        # Market Cap
-        shares = info["shares_outstanding"]
-
-        if shares and shares > 0:
-            market_cap = df["price"] * shares
-            df["log_market_cap"] = np.log( market_cap )
-        else:
-            df["log_market_cap"] = np.nan
-
-        # PE Ratio
-        trailing_pe = info["trailing_pe"]
-        current_price = series.iloc[-1]
-
-        if trailing_pe and trailing_pe > 0:
-            eps_now = current_price / trailing_pe
-            df["pe"] = df["price"] / eps_now
-        else:
-            df["pe"] = np.nan
-
-        # Future Price
-        df["future_5y_return"] = ( df["price"].shift( -TIME_WINDOWS["5y"] ) / df["price"] - 1 )
-
-        # Returns
-        for label, span in TIME_WINDOWS.items():
-            df[f"ret_{label}"] = df["price"].pct_change( span )
-
-        # Monotonic
-        df["monotonic_score_daily"] = (
-            df["price"].pct_change().gt( 0 )
-            .rolling( TIME_WINDOWS["1y"] )
-            .mean()
-        )
-
-        df["monotonic_score"] = df.apply( add_monotonic, axis=1 )
-
-        # Drawdown
-        rolling_max_1y = df["price"].rolling( TIME_WINDOWS["1y"] ).max()
-        df["1y_drawdown"] = df["price"] / rolling_max_1y - 1
-
-        rolling_max_5y = df["price"].rolling( TIME_WINDOWS["5y"] ).max()
-        df["5y_drawdown"] = df["price"] / rolling_max_5y - 1
-
-        # Trend
-        log_price = np.log( df["price"] )
-
-        def slope(x):
-            return np.polyfit( np.arange(len(x)), x, 1 )[0]
-
-        df["1y_trend"] = log_price.rolling( TIME_WINDOWS["1y"] ).apply( slope, raw=True )
-        df["5y_trend"] = log_price.rolling( TIME_WINDOWS["5y"] ).apply( slope, raw=True )
-
-        
-
-        # Clean
-        df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
-
-        # Drop if core stats not available
-        core_cols = ["price", "beta_1y", "alpha_1y", "future_5y_return", "1y_trend", "5y_trend", "monotonic_score_daily"]
-        df = df.dropna( subset=core_cols )
-
-        # Reduce rows
-        df = df[df.index.isin( stride_dates )]
-
-        df_list.append( df )
-
-        print( f"    [{i}/{total}] {ticker}: {len(df)} rows processed" )
+            print( f"    [{i}/{total}] {ticker}: {len(df)} rows processed" )
 
     result = pd.concat( df_list, axis=0 )
 
