@@ -91,8 +91,8 @@ def summarize_clusters( df: pd.DataFrame, cluster_col: str = "cluster" ) -> pd.D
             "reliable": len(group) >= MIN_CLUSTER_SIZE
         })
 
-        summary = pd.DataFrame( rows ).sort_values( "mean_future_5y_return", ascending=False ).reset_index( drop=True )
-        return summary
+    summary = pd.DataFrame( rows ).sort_values( "mean_future_5y_return", ascending=False ).reset_index( drop=True )
+    return summary
     
 def main():
     print( "Loading feature dataset..." )
