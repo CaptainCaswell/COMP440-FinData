@@ -11,6 +11,7 @@ from datetime import datetime
 
 # Files
 RAW_FILE = "data/raw_data.parquet"
+INFO_FILE = "data/raw_info.parquet"
 STOCK_FILE = "data/data.parquet"
 SECTOR_FILE = "data/sector.parquet"
 TICKERS_FILE = "data/company_tickers.json"
@@ -38,120 +39,31 @@ def ensure_data_directory():
     # Create bath if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
 
-def get_symbols() -> List[str]:
-    # Load tickers from file
-    try:
-        with open( TICKERS_FILE, "r" ) as file:
-            data = json.load( file )
+def load_raw_data() -> pd.DataFrame:
+    if not os.path.isfile( RAW_FILE ):
+        raise FileNotFoundError(f"{RAW_FILE} not found. Run the raw data download step first.")
+    return pd.read_parquet( RAW_FILE )
 
-        symbols = [stock["ticker"] for stock in data.values() ]
-        print( f"Loaded {len(symbols)} symbols from {TICKERS_FILE}" )
-
-        return symbols
-    
-    except FileNotFoundError:
-        print( f"Error: {TICKERS_FILE} not found")
-        return []
-
-    except json.JSONDecodeError:
-        print( f"Error: Invalid JSON in {TICKERS_FILE}" )
-        return []
-
-def get_info( ticker:str, info_map: dict ) -> dict:
-    if ticker in info_map:
-        return info_map[ticker]
-    
-    try:
-        info = yf.Ticker( ticker ).info
-
-        fundamentals = {
-            "sector": info.get("sector") or "Unknown",
-            "shares_outstanding": info.get( "sharesOutstanding", None ),
-            "trailing_pe": info.get( "trailingPE", None )
+def load_info_map() -> dict:
+    if not os.path.isfile( INFO_FILE ):
+        raise FileNotFoundError(f"{INFO_FILE} not found. Run get_raw_info.py first.")
+    info_df = pd.read_parquet( INFO_FILE )
+    info_map = {}
+    for _, row in info_df.iterrows():
+        info_map[row["ticker"]] = {
+            "sector": row["sector"] if pd.notna(row["sector"]) else "Unknown",
+            "shares_outstanding": row["shares_outstanding"],
+            "trailing_pe": row["trailing_pe"],
         }
+    return info_map
 
-    except Exception:
-        fundamentals = {
-            "sector": "Unknown",
-            "shares_outstanding": None,
-            "trailing_pe": None
-        }
+def get_info( ticker: str, info_map: dict ) -> dict:
+    return info_map.get(ticker, {
+        "sector": "Unknown",
+        "shares_outstanding": None,
+        "trailing_pe": None,
+    } )
 
-    info_map[ticker] = fundamentals
-    return fundamentals
-
-def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd.DataFrame]:
-    # Download stock data from random sample of symbols
-    # Args:
-    #     symbols: List of ticker symbols to sample from
-    #     existing_df: DataFrame with already downloaded raw data
-    # Returns: Dataframe with stock prices or None if download fails
-
-    # Create list of symbols already downloaded
-    existing_tickers = set( existing_df.columns )
-
-    # Create list of symbols that need to be added
-    symbols = [s for s in all_symbols if s not in existing_tickers]
-
-    random.shuffle( symbols )
-    symbol_queue = list( symbols )
-    data = {}
-    
-    print( f"Starting download for up to {TICKER_COUNT} tickers..." )
-
-    # Loop through all available tickers
-    while len( data ) < TICKER_COUNT and symbol_queue:
-        # Seperate off current batch
-        batch = symbol_queue[:BATCH_SIZE]
-        symbol_queue = symbol_queue[BATCH_SIZE:]
-
-        added = 0
-
-        try:
-            # Download batch
-            df = yf.download( batch, period=PERIOD, auto_adjust=True, progress=False )
-
-            # Guard for empty download
-            if df.empty:
-                print( f"Batch returned empty data" )
-                continue
-
-            df = df["Close"]
-
-            # Guard for single series return instead of dataframe (only one result)
-            if isinstance( df, pd.Series ):
-                df = df.to_frame( name=batch[0])
-
-            for ticker in df.columns:
-                if len( data ) >= TICKER_COUNT:
-                    break
-                
-                series = df[ticker].dropna()
-
-                # Skip tickers without enough data
-                if len( series ) < MIN_ROWS:
-                    print( f"    Skipping {ticker}: only {len(series)} rows ({MIN_ROWS} required)" )
-                    continue
-
-                data[ticker] = series
-                added += 1
-                print( f"    + {ticker}: {len(series)} rows added ({len(data)}/{TICKER_COUNT})" )
-
-        except Exception as e:
-            print( f"Batch failed: {e}" )
-
-        print( f"    {added} of {len( batch )} tickers added. Current total is {len(data)}.")
-
-    if not data:
-        print("No data collected.")
-        return None
-        
-    # Turn list of df into single df
-    raw_df = pd.DataFrame( data )
-    raw_df.to_parquet( RAW_FILE )
-    print( f"{len( data )} tickers saved to file." )
-
-    return raw_df  
 
 def add_monotonic( row: dict ) -> float:
     # Calculate monotonic score (how consistently returns increase for each time window)
@@ -275,9 +187,7 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
         df["1y_trend"] = log_price.rolling( TIME_WINDOWS["1y"] ).apply( slope, raw=True )
         df["5y_trend"] = log_price.rolling( TIME_WINDOWS["5y"] ).apply( slope, raw=True )
 
-        # Switch sectors to numeric dummies
-        sector_dummies = pd.get_dummies( df["sector"], prefix="sector" ).astype( "int8" )
-        df = pd.concat( [df, sector_dummies], axis=1 )
+        
 
         # Clean
         df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
@@ -293,7 +203,13 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
 
         print( f"    {ticker}: {len(df)} rows processed" )
 
-    return pd.concat( df_list, axis=0 )
+    result = pd.concat( df_list, axis=0 )
+
+    # Switch sectors to numeric dummies
+    sector_dummies = pd.get_dummies( result["sector"], prefix="sector" ).astype( "int8" )
+    result = pd.concat( [result, sector_dummies], axis=1 )
+
+    return result
 
 def build_sector( data: pd.DataFrame) -> pd.DataFrame:
     # Get list of sectors
@@ -457,46 +373,25 @@ def main():
 
     ensure_data_directory()
 
-    symbols = get_symbols()
+    # Get Raw Data
+    print(f"Loading raw price data from {RAW_FILE}...")
+    raw_df = load_raw_data()
 
-    # Get raw data
-    if os.path.isfile( RAW_FILE ):
-        print(f"Loading existing raw data from {RAW_FILE}...")
-        raw_df = pd.read_parquet(RAW_FILE)
-        print(f"  Loaded {len(raw_df.columns)} tickers, {len(raw_df)} rows\n")
-        # TODO Check for quantity, prompt user if different
-    else:
-        print("No existing raw data found. New files created...")
-
-        # Download data
-        raw_df = pd.DataFrame()
-
-        # Confirm dataframe
-        if raw_df is None:
-            print( "Raw data download failed. Existing." )
-        
-        print( "Raw data download successful!\n" )
-
-    # Guard for no symbols
-    if not symbols:
-        print("No symbols available. Exiting.")
-        return
-
-    # Download data for new symbols
-    raw_df = get_data( symbols, raw_df )
-
-    # Make sure data was added
     if raw_df is None or raw_df.empty:
-        print( "Raw data download unsucessful. No data found..." )
+        print( "Raw data error. No data found..." )
         return
 
-    print( "Raw data complete" )
+    print(f"  Raw data fo loaded for {len(raw_df.columns)} tickers, {len(raw_df)} rows\n")
+
+    # Get Info Data
+    print(f"Loading cached info from {INFO_FILE}...")
+    info_map = load_info_map()
+    print(f"  Loaded info for {len(info_map)} tickers\n")
 
     # Calculate returns from raw data
     print( "=" * 60 )
     print( "Building feature data")
     print( "=" * 60 )
-    info_map = {}
     stock_data = build_features( raw_df, info_map )
     stock_data = stock_data.reset_index()
     stock_data = stock_data.rename( columns={"Date": "date"} )
@@ -524,7 +419,7 @@ def main():
     duration = ( end_time - start_time ).total_seconds()
     
     print( "\n" + "=" * 60 )
-    print( "PIPELINE COMPLETE" )
+    print( "BUILD COMPLETE" )
     print( "=" * 60 )
     print( f"Output file: {STOCK_FILE}" )
     print( f"Total rows: {len( data ):,}" )
