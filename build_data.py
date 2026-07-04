@@ -241,7 +241,7 @@ def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
 
     # Daily market return
     daily_returns = close.pct_change()
-    market_daily_ret = daily_returns.mean(axis=1)
+    market_daily_ret = daily_returns.median(axis=1)
 
     stride_dates = set( close.index[::WINDOW_STRIDE] )
 
