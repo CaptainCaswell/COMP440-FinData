@@ -3,4 +3,4 @@
 /logs
 *.csv
 *.out
-*.ipynb
+explore.ipynb
