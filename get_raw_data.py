@@ -33,6 +33,7 @@ MIN_ROWS = 3574 # How much data a ticker must have after removing bad values (5%
 LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
 MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
+CHECKPOINT_EVERY_BATCHES = 10
 
 def ensure_data_directory():
     # Create bath if it doesn't exist
@@ -65,7 +66,10 @@ def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd
     # Returns: Dataframe with stock prices or None if download fails
 
     # Create list of symbols already downloaded
-    existing_tickers = set( existing_df.columns.get_level_values( 1 ) ) if not existing_df.empty else set()
+    if not existing_df.empty:
+        existing_tickers = set( existing_df["close"].columns )
+    else:
+        existing_tickers = set()
 
     # Create list of symbols that need to be added
     symbols = [s for s in all_symbols if s not in existing_tickers]
@@ -75,6 +79,9 @@ def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd
     
     close_data = {}
     volume_data = {}
+
+    raw_df = existing_df
+    batch_num = 0
     
     print( f"Starting download for the remaining { len(symbols) } tickers..." )
 
@@ -85,6 +92,7 @@ def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd
         symbol_queue = symbol_queue[BATCH_SIZE:]
 
         added = 0
+        batch_num += 1
 
         try:
             # Download batch
@@ -122,25 +130,35 @@ def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd
 
         print( f"    {added} of {len( batch )} tickers added. Current total is {len(close_data)}.")
 
-    if not close_data:
-        print("No data collected.")
+        if close_data and batch_num % CHECKPOINT_EVERY_BATCHES == 0:
+            raw_df = merge_and_save( existing_df, close_data, volume_data )
+            print( f"    -- checkpoint saved ({len(close_data)} new tickers so far) --" )
+
+    # Final save, whether or not we hit a checkpoint boundary
+    if close_data:
+        raw_df = merge_and_save( existing_df, close_data, volume_data )
+        print( f"{len(close_data)} new tickers added this run." )
+    elif existing_df.empty:
+        print( "No data collected." )
         return None
     
+    return raw_df
+
+def merge_and_save( existing_df: pd.DataFrame, close_data: dict, volume_data: dict ) -> pd.DataFrame:
     # Create dataframe for new data, then merge with existing
     close_new = pd.concat( close_data, axis=1 )
     volume_new = pd.concat( volume_data, axis=1 )
     new_df = pd.concat( {"close": close_new, "volume": volume_new}, axis=1 )
 
     if not existing_df.empty:
-        raw_df = pd.concat( [existing_df, new_df], axis=1 )
+        merged = pd.concat( [existing_df, new_df], axis=1 )
     else:
-        raw_df = new_df
+        merged = new_df
         
     # Turn list of df into single df
-    raw_df.to_parquet( RAW_FILE )
-    print( f"{len( close_data )} tickers saved to file." )
+    merged.to_parquet( RAW_FILE )
 
-    return raw_df  
+    return merged
 
 def main():
     # Get starting time
@@ -155,7 +173,7 @@ def main():
     if os.path.isfile( RAW_FILE ):
         print(f"Loading existing raw data from {RAW_FILE}...")
         raw_df = pd.read_parquet(RAW_FILE)
-        print(f"  Loaded {len(raw_df.columns)} tickers, {len(raw_df)} rows\n")
+        print(f"  Loaded {len(raw_df['close'].columns)} tickers, {len(raw_df)} rows\n")
     else:
         print("No existing raw data found. New files created...")
 
@@ -189,7 +207,7 @@ def main():
     print( "RAW DATA COMPLETE" )
     print( "=" * 60 )
     print( f"Output file: {RAW_FILE}" )
-    print( f"Total tickers: {len( raw_df.columns ) - 1}" )
+    print( f"Total tickers: {len( raw_df['close'].columns ) - 1}" )
     print( f"Duration: {duration:.1f} seconds" )
     print( f"Memory usage: {raw_df.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
 

@@ -35,7 +35,7 @@ LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
 MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
 REQUEST_DELAY = 0.5
-CHECKPOINT_EVERY = 10
+CHECKPOINT_EVERY = 20
 
 def ensure_data_directory():
     # Create bath if it doesn't exist
@@ -62,7 +62,7 @@ def get_tickers() -> list:
             f"{RAW_FILE} not found. Run the raw data download step first."
         )
     raw_df = pd.read_parquet( RAW_FILE )
-    return list( raw_df.columns )
+    return list( raw_df["close"].columns )
 
 def finite_float( value ) -> Optional[float]:
     # Cleans infinite values

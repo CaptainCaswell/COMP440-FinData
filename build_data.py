@@ -40,9 +40,12 @@ MIN_PRICE = 1.00
 
 INFO_MAP = None
 MARKET_DAILY_RET = None
+VOLUME_MAP = None
+MIN_VOLUME = 10000
+MAX_CHANGE = 1.00
 
 def init_worker( info_map, market_daily_ret ):
-    global INFO_MAP, MARKET_DAILY_RET
+    global INFO_MAP, MARKET_DAILY_RET, VOLUME_MAP
     INFO_MAP = info_map
     MARKET_DAILY_RET = market_daily_ret
 
@@ -50,10 +53,13 @@ def ensure_data_directory():
     # Create bath if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
 
-def load_raw_data() -> pd.DataFrame:
+def load_raw_data() -> tuple:
     if not os.path.isfile( RAW_FILE ):
         raise FileNotFoundError(f"{RAW_FILE} not found. Run the raw data download step first.")
-    return pd.read_parquet( RAW_FILE )
+    
+    # Split into prices and volume
+    raw_df = pd.read_parquet( RAW_FILE )
+    return raw_df["close"], raw_df["volume"]
 
 def load_info_map() -> dict:
     if not os.path.isfile( INFO_FILE ):
@@ -98,18 +104,31 @@ def rolling_slope(y: pd.Series, window: int) -> pd.Series:
     # pad to match original length
     return pd.Series(np.concatenate([np.full(window - 1, np.nan), slope]), index=idx)
 
-def process_ticker( ticker: str, series: pd.Series ) -> Optional[pd.DataFrame]:
+def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optional[pd.DataFrame]:
     min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
 
     series = series.dropna().sort_index()
 
     if len( series ) < min_length:
         return None
-    
 
     df = pd.DataFrame( index=series.index )
     df["ticker"] = ticker
     df["price"] = series
+
+    # Check for anomolous price changes
+    daily_ret = df["price"].pct_change()
+    above_floor = df["price"] >= MIN_PRICE
+    big_moves = ( daily_ret.abs() > MAX_CHANGE ) & above_floor
+
+    if big_moves.any():
+        vol_aligned = volume.reindex( df.index ) if volume is not None else None
+        
+        if vol_aligned is not None:
+            suspicious_jump = big_moves & ( vol_aligned.fillna(0) < MIN_VOLUME )
+            if suspicious_jump.any():
+                print( f"    **** {ticker} rejected due to suspicious jump in price, change of {daily_ret.abs().max():.2%} with less than {MIN_VOLUME} trades ****")
+                return None
 
     # Alpha/Beta
     stock_ret = df["price"].pct_change()
@@ -214,7 +233,7 @@ def add_monotonic( row: dict ) -> float:
     
     return score / ( len( values ) - 1 )
 
-def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
+def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
     # Build data feature matrix from raw price data
     # Args:
     #     close: DataFrame with closeing prices
@@ -236,7 +255,7 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
     
     with ProcessPoolExecutor( max_workers=n_workers, initializer=init_worker, initargs=(info_map, market_daily_ret) ) as executor:
         futures = {
-            executor.submit( process_ticker, ticker, close[ticker] ): ticker
+            executor.submit( process_ticker, ticker, close[ticker], volume[ticker] ): ticker
             for ticker in close.columns
         }
     
@@ -431,7 +450,7 @@ def main():
 
     # Get Raw Data
     print(f"Loading raw price data from {RAW_FILE}...")
-    raw_df = load_raw_data()
+    raw_df, volume_df = load_raw_data()
 
     if raw_df is None or raw_df.empty:
         print( "Raw data error. No data found..." )
@@ -448,7 +467,7 @@ def main():
     print( "=" * 60 )
     print( "Building feature data")
     print( "=" * 60 )
-    stock_data = build_features( raw_df, info_map )
+    stock_data = build_features( raw_df, volume_df, info_map )
     stock_data = stock_data.reset_index()
     stock_data = stock_data.rename( columns={"Date": "date"} )
     print( "" )
