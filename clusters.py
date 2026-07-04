@@ -5,6 +5,7 @@ from pathlib import Path
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics import silhouette_score
+from scipy.stats import trim_mean
 
 # Files
 STOCK_FILE = "data/data.parquet"
@@ -78,20 +79,29 @@ def summarize_clusters( df: pd.DataFrame, cluster_col: str = "cluster" ) -> pd.D
     rows = []
 
     for cluster_id, group in df.groupby( cluster_col ):
+
+        target = group[TARGET_COL]
+        q25, q75 = target.quantile(0.25), target.quantile(0.75)
+        mean_val = target.mean()
+        median_val = target.median()
+
         rows.append({
             "cluster": cluster_id,
             "count": len(group),
-            "mean_future_5y_return": group[TARGET_COL].mean(),
-            "median_future_5y_return": group[TARGET_COL].median(),
-            "std_future_5y_return": group[TARGET_COL].std(),
-            "vs_overall_mean": group[TARGET_COL].mean() - overall_mean,
+            "mean_future_5y_return": mean_val,
+            "median_future_5y_return": median_val,
+            "trimmed_mean_future_5y_return": trim_mean(target, proportiontocut=0.10),
+            "std_future_5y_return": target.std(),
+            "iqr_future_5y_return": q75 - q25,
+            "skew_ratio": mean_val / median_val if median_val != 0 else np.nan,
+            "vs_overall_mean": mean_val - overall_mean,
             "avg_beta_1y": group["beta_1y"].mean(),
             "avg_1y_trend": group["1y_trend"].mean(),
             "avg_5y_drawdown": group["5y_drawdown"].mean(),
             "reliable": len(group) >= MIN_CLUSTER_SIZE
         })
 
-    summary = pd.DataFrame( rows ).sort_values( "mean_future_5y_return", ascending=False ).reset_index( drop=True )
+    summary = pd.DataFrame( rows ).sort_values( "trimmed_mean_future_5y_return", ascending=False ).reset_index( drop=True )
     return summary
     
 def main():
@@ -141,7 +151,10 @@ def main():
         best_cluster = reliable.iloc[0]
         print(f"\nBest reliable cluster: #{int(best_cluster['cluster'])} "
               f"(n={int(best_cluster['count'])}, "
-              f"mean 5y return={best_cluster['mean_future_5y_return']:.2%})")
+              f"trimmed mean 5y return={best_cluster['trimmed_mean_future_5y_return']:.2%}, "
+              f"raw mean={best_cluster['mean_future_5y_return']:.2%}, "
+              f"median={best_cluster['median_future_5y_return']:.2%}, "
+              f"skew_ratio={best_cluster['skew_ratio']:.2f})")
     unreliable = summary[~summary["reliable"]]
     if not unreliable.empty:
         print(f"\nNote: {len(unreliable)} cluster(s) have fewer than {MIN_CLUSTER_SIZE} rows "
