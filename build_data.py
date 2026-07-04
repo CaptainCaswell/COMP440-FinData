@@ -36,7 +36,15 @@ MIN_ROWS = 3574 # How much data a ticker must have after removing bad values (5%
 LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
 MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
-MIN_PRICE = 0.10
+MIN_PRICE = 1.00
+
+INFO_MAP = None
+MARKET_DAILY_RET = None
+
+def init_worker( info_map, market_daily_ret ):
+    global INFO_MAP, MARKET_DAILY_RET
+    INFO_MAP = info_map
+    MARKET_DAILY_RET = market_daily_ret
 
 def ensure_data_directory():
     # Create bath if it doesn't exist
@@ -67,7 +75,30 @@ def get_info( ticker: str, info_map: dict ) -> dict:
         "trailing_pe": None,
     } )
 
-def process_ticker( ticker: str, series: pd.Series, market_daily_ret: pd.Series, info_map: dict ) -> Optional[pd.DataFrame]:
+def rolling_slope(y: pd.Series, window: int) -> pd.Series:
+    idx = y.index
+
+    y = y.values.astype(float)
+
+    x = np.arange(window)
+    x_mean = x.mean()
+    x2 = np.sum((x - x_mean) ** 2)
+
+    # Precompute rolling sums
+    y_sum = np.convolve(y, np.ones(window), mode="valid")
+    y_x_sum = np.convolve(y, x[::-1], mode="valid")
+
+    # slope formula:
+    # (n * Σ(xy) - Σx Σy) / (n * Σ(x^2) - (Σx)^2)
+    n = window
+    sum_x = np.sum(x)
+
+    slope = (n * y_x_sum - sum_x * y_sum) / ( n* x2 )
+
+    # pad to match original length
+    return pd.Series(np.concatenate([np.full(window - 1, np.nan), slope]), index=idx)
+
+def process_ticker( ticker: str, series: pd.Series ) -> Optional[pd.DataFrame]:
     min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
 
     series = series.dropna().sort_index()
@@ -82,7 +113,7 @@ def process_ticker( ticker: str, series: pd.Series, market_daily_ret: pd.Series,
 
     # Alpha/Beta
     stock_ret = df["price"].pct_change()
-    market_ret_aligned = market_daily_ret.reindex( df.index )
+    market_ret_aligned = MARKET_DAILY_RET.reindex( df.index )
 
     rolling_cov = stock_ret.rolling(TIME_WINDOWS["1y"], min_periods=50).cov(market_ret_aligned)
     rolling_var = market_ret_aligned.rolling(TIME_WINDOWS["1y"], min_periods=50).var()
@@ -91,7 +122,7 @@ def process_ticker( ticker: str, series: pd.Series, market_daily_ret: pd.Series,
     df["alpha_1y"] = stock_ret - df["beta_1y"] * market_ret_aligned
 
     # Info
-    info = get_info( ticker, info_map )
+    info = get_info( ticker, INFO_MAP )
     df["sector"] = info["sector"]
 
     # Market Cap
@@ -139,11 +170,13 @@ def process_ticker( ticker: str, series: pd.Series, market_daily_ret: pd.Series,
     # Trend
     log_price = np.log( df["price"] )
 
-    def slope(x):
-        return np.polyfit( np.arange(len(x)), x, 1 )[0]
-
-    df["1y_trend"] = log_price.rolling( TIME_WINDOWS["1y"] ).apply( slope, raw=True )
-    df["5y_trend"] = log_price.rolling( TIME_WINDOWS["5y"] ).apply( slope, raw=True )
+    # def slope(x):
+    #     return np.polyfit( np.arange(len(x)), x, 1 )[0]
+    # df["1y_trend"] = log_price.rolling( TIME_WINDOWS["1y"] ).apply( slope, raw=True )
+    # df["5y_trend"] = log_price.rolling( TIME_WINDOWS["5y"] ).apply( slope, raw=True )
+    # Faster
+    df["1y_trend"] = rolling_slope( log_price, TIME_WINDOWS["1y"] )
+    df["5y_trend"] = rolling_slope( log_price, TIME_WINDOWS["5y"] )
 
     # Clean
     df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
@@ -151,6 +184,9 @@ def process_ticker( ticker: str, series: pd.Series, market_daily_ret: pd.Series,
     # Drop if core stats not available
     core_cols = ["price", "beta_1y", "alpha_1y", "future_5y_return", "1y_trend", "5y_trend", "monotonic_score_daily"]
     df = df.dropna( subset=core_cols )
+
+    # Drop rows with unrealistic price
+    df = df[df["price"] >= MIN_PRICE]
 
     return df
 
@@ -198,9 +234,9 @@ def build_features( close: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
     
     # min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
     
-    with ProcessPoolExecutor( max_workers=n_workers ) as executor:
+    with ProcessPoolExecutor( max_workers=n_workers, initializer=init_worker, initargs=(info_map, market_daily_ret) ) as executor:
         futures = {
-            executor.submit( process_ticker, ticker, close[ticker], market_daily_ret, into_map ): ticker
+            executor.submit( process_ticker, ticker, close[ticker] ): ticker
             for ticker in close.columns
         }
     

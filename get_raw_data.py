@@ -65,14 +65,16 @@ def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd
     # Returns: Dataframe with stock prices or None if download fails
 
     # Create list of symbols already downloaded
-    existing_tickers = set( existing_df.columns )
+    existing_tickers = set( existing_df.columns.get_level_values( 1 ) ) if not existing_df.empty else set()
 
     # Create list of symbols that need to be added
     symbols = [s for s in all_symbols if s not in existing_tickers]
 
     random.shuffle( symbols )
     symbol_queue = list( symbols )
-    data = {}
+    
+    close_data = {}
+    volume_data = {}
     
     print( f"Starting download for the remaining { len(symbols) } tickers..." )
 
@@ -86,44 +88,57 @@ def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd
 
         try:
             # Download batch
-            df = yf.download( batch, period=PERIOD, auto_adjust=True, progress=False )
+            full_df = yf.download( batch, period=PERIOD, auto_adjust=True, progress=False )
 
             # Guard for empty download
-            if df.empty:
+            if full_df.empty:
                 print( f"Batch returned empty data" )
                 continue
 
-            df = df["Close"]
+            close_df = full_df["Close"]
+            volume_df = full_df["Volume"]
 
             # Guard for single series return instead of dataframe (only one result)
-            if isinstance( df, pd.Series ):
-                df = df.to_frame( name=batch[0])
+            if isinstance( close_df, pd.Series ):
+                close_df = close_df.to_frame( name=batch[0])
+                volume_df = volume_df.to_frame( name=batch[0])
 
-            for ticker in df.columns:             
-                series = df[ticker].dropna()
+            for ticker in close_df.columns:             
+                series = close_df[ticker].dropna()
 
                 # Skip tickers without enough data
                 if len( series ) < MIN_ROWS:
                     print( f"    Skipping {ticker}: only {len(series)} rows ({MIN_ROWS} required)" )
                     continue
 
-                data[ticker] = series
+                close_data[ticker] = series
+                volume_data[ticker] = volume_df[ticker].reindex( series.index )
+
                 added += 1
-                print( f"    + {ticker}: {len(series)} rows added ({len(data)} total" )
+                print( f"    + {ticker}: {len(series)} rows added ({len(close_data)} total" )
 
         except Exception as e:
             print( f"Batch failed: {e}" )
 
-        print( f"    {added} of {len( batch )} tickers added. Current total is {len(data)}.")
+        print( f"    {added} of {len( batch )} tickers added. Current total is {len(close_data)}.")
 
-    if not data:
+    if not close_data:
         print("No data collected.")
         return None
+    
+    # Create dataframe for new data, then merge with existing
+    close_new = pd.concat( close_data, axis=1 )
+    volume_new = pd.concat( volume_data, axis=1 )
+    new_df = pd.concat( {"close": close_new, "volume": volume_new}, axis=1 )
+
+    if not existing_df.empty:
+        raw_df = pd.concat( [existing_df, new_df], axis=1 )
+    else:
+        raw_df = new_df
         
     # Turn list of df into single df
-    raw_df = pd.DataFrame( data )
     raw_df.to_parquet( RAW_FILE )
-    print( f"{len( data )} tickers saved to file." )
+    print( f"{len( close_data )} tickers saved to file." )
 
     return raw_df  
 
@@ -174,7 +189,7 @@ def main():
     print( "RAW DATA COMPLETE" )
     print( "=" * 60 )
     print( f"Output file: {RAW_FILE}" )
-    print( f"Total rows: {len( raw_df ):,}" )
+    print( f"Total tickers: {len( raw_df.columns ) - 1}" )
     print( f"Duration: {duration:.1f} seconds" )
     print( f"Memory usage: {raw_df.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
 

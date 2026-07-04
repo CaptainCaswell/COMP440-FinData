@@ -101,7 +101,7 @@ def get_info( ticker:str ) -> dict:
 def save_info( existing: pd.DataFrame, new_rows: list, refetch_tickers: set ) -> pd.DataFrame:
     # Drop incomplete
     if not existing.empty and refetch_tickers:
-        existing = existing[-existing["ticker"].isin( refetch_tickers )]
+        existing = existing[~existing["ticker"].isin( refetch_tickers )]
 
     if new_rows:
         new_df = pd.DataFrame( new_rows )
