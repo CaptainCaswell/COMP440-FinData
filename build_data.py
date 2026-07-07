@@ -127,8 +127,12 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
         if vol_aligned is not None:
             suspicious_jump = big_moves & ( vol_aligned.fillna(0) < MIN_VOLUME )
             if suspicious_jump.any():
-                print( f"    **** {ticker} rejected due to suspicious jump in price, change of {daily_ret.abs().max():.2%} with less than {MIN_VOLUME} trades ****")
+                print( f"    **** {ticker} rejected due to suspicious jump in price, change of {daily_ret[suspicious_jump].abs().max():.2%} with less than {MIN_VOLUME} trades ****")
                 return None
+            
+        else:
+            print( f"    **** {ticker} rejected due to suspicious jump in price, change of {daily_ret[big_moves].abs().max():.2%}, no volume data available to verify ****")
+            return None
 
     # Alpha/Beta
     stock_ret = df["price"].pct_change()
