@@ -1,6 +1,7 @@
-*.parquet
+/__pycache__
 /.venv
 /logs
+/data
 *.csv
 *.out
-explore.ipynb
+*.parquet
