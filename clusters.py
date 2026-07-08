@@ -6,6 +6,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics import silhouette_score
 from scipy.stats import trim_mean
+import sys
 
 # Files
 STOCK_FILE = "data/data.parquet"
@@ -21,7 +22,7 @@ K_RANGE = range( 2, 11 )
 MIN_CLUSTER_SIZE = 200
 RANDOM_STATE = 42
 
-MAX_DEPTH = 2
+MAX_DEPTH = 5
 MIN_ROWS = 5000
 
 PRIM_EXCLUDE = {
@@ -43,6 +44,18 @@ SEC_EXCLUDE = {
     "pe"
 }
 
+GEN = 1
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
 def ensure_data_directory():
     # Create path if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
@@ -58,6 +71,7 @@ def select_feature_columns( df: pd.DataFrame ) -> list:
     numeric_cols = df.select_dtypes( include=[np.number] ).columns.tolist()
     exclude = set( ID_COLS ) | { TARGET_COL } | PRIM_EXCLUDE | SEC_EXCLUDE
     return [c for c in numeric_cols if c not in exclude]
+    return [c for c in numeric_cols if c not in exclude and not c.endswith( "_market" )]
 
 def prepare_features( df: pd.DataFrame, feature_cols: list ) -> pd.DataFrame:
     # Replace any missing cells with median value
@@ -168,6 +182,8 @@ def run_clustering( df: pd.DataFrame, depth: int ) -> tuple:
     return df, summary, best_cluster_id
     
 def main():
+    log_file = open(f"data/cluster_log_gen{GEN}.txt", "w")
+    sys.stdout = Tee(sys.__stdout__, log_file)
 
     print( "Loading feature dataset..." )
     df = load_data()
@@ -185,8 +201,8 @@ def main():
 
     while depth < MAX_DEPTH:
         clustered_df, summary, best_cluster_id = run_clustering( current_df, depth )
-        clustered_df.to_parquet( f"data/clustered_data_depth{depth}.parquet" )
-        summary.to_csv( f"data/cluster_summary_depth{depth}.csv", index=False)
+        clustered_df.to_parquet( f"data/clustered_data_gen{GEN}_depth{depth}.parquet" )
+        summary.to_csv( f"data/cluster_summary_gen{GEN}_depth{depth}.csv", index=False)
 
         if best_cluster_id is None:
             print(f"[Depth {depth}] No reliable cluster found — stopping.")
