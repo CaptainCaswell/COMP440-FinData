@@ -1,536 +1,84 @@
-# Metrics Documentation
-
-This document describes all calculated metrics used in the stock feature pipeline.
-
----
-
-## Base Features
-
-### future_5y_return
-
-#### Description
-
-Target variable representing the stock's forward 5-year return.
-
-#### Code
-
-```python
-df["future_5y_return"] = (
-    df["price"].shift( -TIME_WINDOWS["5y"] )
-    / df["price"] - 1
-)
-```
-
----
-
-## Return Metrics
-
-### ret_1d, ret_1w, ret_1m, ret_6m, ret_1y, ret_3y, ret_5y
-
-#### Description
-
-Percentage return over multiple historical lookback periods.
-
-#### Code
-
-```python
-for label, span in TIME_WINDOWS.items():
-    df[f"ret_{label}"] = df["price"].pct_change( span )
-```
-
-#### Time Windows
-
-| Label | Trading Days |
-|-------|-------|
-| 1d | 1 |
-| 1w | 5 |
-| 1m | 21 |
-| 6m | 126 |
-| 1y | 251 |
-| 3y | 753 |
-| 5y | 1254 |
-
----
-
-## Monotonicity Metrics
-
-### monotonic_score_daily
-
-#### Description
-
-Measures how consistently a stock posts positive daily returns during the last year.
-
-#### Code
-
-```python
-df["monotonic_score_daily"] = (
-    df["price"]
-    .pct_change()
-    .gt(0)
-    .rolling( TIME_WINDOWS["1y"] )
-    .mean()
-)
-```
-
----
-
-### monotonic_score
-
-#### Description
-
-Measures whether returns increase consistently across progressively longer time horizons.
-
-#### Code
-
-```python
-df["monotonic_score"] = df.apply(
-    add_monotonic,
-    axis=1
-)
-```
-
-#### Calculation Function
-
-```python
-def add_monotonic( row ):
-
-    values = []
-
-    for label in TIME_WINDOWS.keys():
-        val = row.get( f"ret_{label}" )
-
-        if pd.notna( val ):
-            values.append( val )
-
-    if len( values ) < 2:
-        return 0.0
-
-    score = sum(
-        values[i] >= values[i-1]
-        for i in range(1, len(values))
-    )
-
-    return score / ( len(values) - 1 )
-```
-
----
-
-## Drawdown Metrics
-
-### 1y_drawdown
-
-#### Description
-
-Measures decline from the highest price reached within the past year.
-
-#### Code
-
-```python
-rolling_max_1y = (
-    df["price"]
-    .rolling( TIME_WINDOWS["1y"] )
-    .max()
-)
-
-df["1y_drawdown"] = (
-    df["price"]
-    / rolling_max_1y
-    - 1
-)
-```
-
----
-
-### 5y_drawdown
-
-#### Description
-
-Measures decline from the highest price reached within the past 5 years.
-
-#### Code
-
-```python
-rolling_max_5y = (
-    df["price"]
-    .rolling( TIME_WINDOWS["5y"] )
-    .max()
-)
-
-df["5y_drawdown"] = (
-    df["price"]
-    / rolling_max_5y
-    - 1
-)
-```
-
----
-
-## Trend Metrics
-
-### 1y_trend
-
-#### Description
-
-Linear trend slope of log price over a rolling 1-year window.
-
-#### Code
-
-```python
-log_price = np.log( df["price"] )
-
-def slope(x):
-    return np.polyfit(
-        np.arange(len(x)),
-        x,
-        1
-    )[0]
-
-df["1y_trend"] = (
-    log_price
-    .rolling( TIME_WINDOWS["1y"] )
-    .apply( slope, raw=True )
-)
-```
-
----
-
-### 5y_trend
-
-#### Description
-
-Linear trend slope of log price over a rolling 5-year window.
-
-#### Code
-
-```python
-df["5y_trend"] = (
-    log_price
-    .rolling( TIME_WINDOWS["5y"] )
-    .apply( slope, raw=True )
-)
-```
-
----
-
-## Sector Metrics
-
-### sec_avg_ret_*
-
-#### Description
-
-Average sector return for all stocks within a sector on a given date.
-
-#### Code
-
-```python
-"sec_avg_ret_1d": date_df["ret_1d"].mean(),
-"sec_avg_ret_1w": date_df["ret_1w"].mean(),
-"sec_avg_ret_1m": date_df["ret_1m"].mean(),
-"sec_avg_ret_6m": date_df["ret_6m"].mean(),
-"sec_avg_ret_1y": date_df["ret_1y"].mean(),
-"sec_avg_ret_3y": date_df["ret_3y"].mean(),
-"sec_avg_ret_5y": date_df["ret_5y"].mean(),
-```
-
----
-
-### sec_breadth_positive_1y
-
-#### Description
-
-Fraction of sector members with positive 1-year returns.
-
-#### Code
-
-```python
-"sec_breadth_positive_1y":
-    ( date_df["ret_1y"] > 0 ).mean()
-```
-
----
-
-### sec_breadth_positive_5y
-
-#### Description
-
-Fraction of sector members with positive 5-year returns.
-
-#### Code
-
-```python
-"sec_breadth_positive_5y":
-    ( date_df["ret_5y"] > 0 ).mean()
-```
-
----
-
-### sec_avg_1y_trend / sec_avg_5y_trend
-
-#### Description
-
-Average trend slope across sector members.
-
-#### Code
-
-```python
-"sec_avg_1y_trend":
-    date_df["1y_trend"].mean(),
-
-"sec_avg_5y_trend":
-    date_df["5y_trend"].mean(),
-```
-
----
-
-### sec_positive_1y_trend_pct
-
-#### Description
-
-Percentage of stocks with positive 1-year trends.
-
-#### Code
-
-```python
-"sec_positive_1y_trend_pct":
-    ( date_df["1y_trend"] > 0 ).mean()
-```
-
----
-
-### sec_avg_1y_drawdown / sec_avg_5y_drawdown
-
-#### Description
-
-Average drawdown across sector members.
-
-#### Code
-
-```python
-"sec_avg_1y_drawdown":
-    date_df["1y_drawdown"].mean()
-
-"sec_avg_5y_drawdown":
-    date_df["5y_drawdown"].mean()
-```
-
----
-
-### sec_strong_drawdown_resilience
-
-#### Description
-
-Percentage of stocks with less than 20% 1-year drawdown.
-
-#### Code
-
-```python
-"sec_strong_drawdown_resilience":
-    ( date_df["1y_drawdown"] > -0.2 ).mean()
-```
-
----
-
-### sec_avg_monotonic_score
-
-#### Description
-
-Average monotonic score across sector members.
-
-#### Code
-
-```python
-"sec_avg_monotonic_score":
-    date_df["monotonic_score"].mean()
-```
-
----
-
-### sec_high_monotonic_pct
-
-#### Description
-
-Percentage of stocks with monotonic score above 0.8.
-
-#### Code
-
-```python
-"sec_high_monotonic_pct":
-    ( date_df["monotonic_score"] > 0.8 ).mean()
-```
-
----
-
-### sec_ret_1y_dispersion / sec_ret_5y_dispersion
-
-#### Description
-
-Cross-sectional standard deviation of sector returns.
-
-#### Code
-
-```python
-"sec_ret_1y_dispersion":
-    date_df["ret_1y"].std()
-
-"sec_ret_5y_dispersion":
-    date_df["ret_5y"].std()
-```
-
----
-
-## Relative Comparison Metrics
-
-### excess_ret_1y / excess_ret_5y
-
-#### Description
-
-Stock return minus sector average return.
-
-#### Code
-
-```python
-df["excess_ret_1y"] = (
-    df["ret_1y"]
-    - df["sec_avg_ret_1y"]
-)
-
-df["excess_ret_5y"] = (
-    df["ret_5y"]
-    - df["sec_avg_ret_5y"]
-)
-```
-
----
-
-### trend_vs_sector_1y / trend_vs_sector_5y
-
-#### Description
-
-Stock trend relative to sector average trend.
-
-#### Code
-
-```python
-df["trend_vs_sector_1y"] = (
-    df["1y_trend"]
-    - df["sec_avg_1y_trend"]
-)
-```
-
----
-
-### drawdown_rel_1y / drawdown_rel_5y
-
-#### Description
-
-Stock drawdown relative to sector average drawdown.
-
-#### Code
-
-```python
-df["drawdown_rel_1y"] = (
-    df["1y_drawdown"]
-    - df["sec_avg_1y_drawdown"]
-)
-```
-
----
-
-### excess_vs_market_1y
-
-#### Description
-
-Stock return relative to market average return.
-
-#### Code
-
-```python
-df["excess_vs_market_1y"] = (
-    df["ret_1y"]
-    - df["sec_avg_ret_1y_market"]
-)
-```
-
----
-
-### risk_adjusted_1y / risk_adjusted_5y
-
-#### Description
-
-Sector-relative excess return normalized by sector dispersion.
-
-#### Code
-
-```python
-df["risk_adjusted_1y"] = (
-    df["excess_ret_1y"]
-    / df["sec_ret_1y_dispersion"]
-        .replace(0, np.nan)
-)
-```
-
----
-
-## Boolean Sector Signals
-
-### sector_is_strong
-
-#### Description
-
-True if sector average 1-year return is positive.
-
-#### Code
-
-```python
-df["sector_is_strong"] =
-    df["sec_avg_ret_1y"] > 0
-```
-
----
-
-### sector_is_trending
-
-#### Description
-
-True if sector average trend is positive.
-
-#### Code
-
-```python
-df["sector_is_trending"] =
-    df["sec_avg_1y_trend"] > 0
-```
-
----
-
-### sector_high_breadth
-
-#### Description
-
-True if more than 60% of the sector has positive 1-year returns.
-
-#### Code
-
-```python
-df["sector_high_breadth"] =
-    df["sec_breadth_positive_1y"] > 0.6
-```
-
----
-
-## Composite Score
-
-### quality_score
-
-#### Description
-Simple additive quality score combining return strength, trend strength, and drawdown strength.
-
-#### Code
-
-```python
-df["quality_score"] = (
-    (df["excess_ret_1y"] > 0).astype(int)
-    + (df["trend_vs_sector_1y"] > 0).astype(int)
-    + (df["drawdown_rel_1y"] > 0).astype(int)
-)
-```
+# COMP440-FinData — Data Dictionary
+
+Covers every column produced by `build_data.py` and stored in `data.parquet`.
+
+## Identity / metadata columns
+
+| Column | Description |
+| --- | --- |
+| `ticker` | Stock symbol |
+| `date` | Observation date (strided every `WINDOW_STRIDE`=5 trading days) |
+| `sector` | Sector name from yfinance `.info` (or "Unknown" if unavailable) |
+
+## Price / size / valuation
+
+| Column | Description |
+| --- | --- |
+| `price` | Raw closing price on this date |
+| `log_market_cap` | `log(price × shares_outstanding)` or NaN if shares_outstanding unavailable. Imputed as median value if NaN. |
+| `pe` | `Price / (current_price ÷ trailing_pe)` A flat-EPS PE proxy applied across history. NaN if trailing_pe missing/≤0 |
+
+## Returns
+
+| Column | Description |
+| --- | --- |
+| `ret_1d`, `ret_1w`, `ret_1m`, `ret_6m`, `ret_1y`, `ret_3y`, `ret_5y` | Trailing % price change over each window (1 day / week / month / 6mo / 1yr / 3yr / 5yr) |
+| `future_5y_return` | Forward-looking 5-year return. **the clustering target**, never a feature |
+
+## Risk / trend / behavior
+
+| Column | Description |
+| --- | --- |
+| `beta_1y` | Rolling 1-year beta vs. median-based market daily return |
+| `alpha_1y` | Rolling 1-year alpha (stock return minus beta-scaled market return) |
+| `monotonic_score_daily` | Fraction of up-days over trailing 1 year |
+| `monotonic_score` | Consistency of return acceleration across the 7 return windows (0–1) |
+| `1y_drawdown`, `5y_drawdown` | Current price vs. trailing 1yr/5yr max, as a % |
+| `1y_trend`, `5y_trend` | Rolling slope of log(price) over 1yr/5yr window (per-day log-price slope) |
+
+## Sector one-hot dummies
+
+| Column | Description | Used in clustering |
+| --- | --- |
+| `sector_Basic Materials` … `sector_Utilities` (11 real sectors) | 1 if stock belongs to this sector, else 0 |
+| `sector_Unknown` | 1 if sector could not be determined (missing/failed info fetch) |
+
+## Dataset-size proxies (per date, per sector / market)
+
+| Column | Description |
+| --- | --- |
+| `sector_size`, `rows` | Number of unique tickers / rows in this sector on this date |
+| `sector_size_market`, `rows_market` | Same, but market-wide |
+
+## Sector aggregates (`sec_*`, computed per sector per date)
+
+| Column | Description |
+| --- | --- |
+| `sec_avg_ret_1d/1w/1m/6m/1y/3y/5y` | Mean of that return window across all stocks in the sector |
+| `sec_breadth_positive_1y/5y` | % of sector stocks with positive 1yr/5yr return |
+| `sec_avg_1y_trend`, `sec_avg_5y_trend` | Mean trend across sector |
+| `sec_positive_1y_trend_pct`, `sec_positive_5y_trend_pct` | % of sector stocks with positive trend |
+| `sec_avg_1y_drawdown`, `sec_avg_5y_drawdown` | Mean drawdown across sector |
+| `sec_strong_drawdown_resilience` | % of sector stocks with 1yr drawdown better than -20% |
+| `sec_avg_monotonic_score`, `sec_avg_monotonic_score_daily` | Mean monotonicity across sector |
+| `sec_high_monotonic_pct` | % of sector stocks with monotonic_score > 0.8 |
+| `sec_ret_1y_dispersion`, `sec_ret_5y_dispersion` | Std dev of sector's 1yr/5yr returns (spread) |
+
+## Market aggregates (`sec_*_market`, same as above but market-wide, not sector-limited)
+
+| Column | Description |
+| --- | --- |
+| `sec_avg_ret_*_market`, `sec_breadth_positive_*_market`, `sec_avg_*_trend_market`, `sec_positive_*_trend_pct_market`, `sec_avg_*_drawdown_market`, `sec_strong_drawdown_resilience_market`, `sec_avg_monotonic_score*_market`, `sec_high_monotonic_pct_market`, `sec_ret_*_dispersion_market` | Same definitions as sector aggregates, computed market-wide instead of per-sector |
+
+## Relative / composite features
+
+| Column | Description |
+| --- | --- |
+| `excess_ret_1y`, `excess_ret_5y` | `ret_1y`/`ret_5y` minus sector average |
+| `trend_vs_sector_1y`, `trend_vs_sector_5y` | Trend minus sector average trend |
+| `drawdown_rel_1y`, `drawdown_rel_5y` | Drawdown minus sector average drawdown |
+| `excess_vs_market_1y` | `ret_1y` minus market average |
+| `trend_vs_market_1y` | Trend minus market average trend |
+| `risk_adjusted_1y`, `risk_adjusted_5y` | Excess return divided by sector return dispersion |
+| `sector_is_strong`, `sector_is_trending`, `sector_high_breadth` | Boolean flags derived from sector aggregates |
+| `quality_score` | Sum of 3 boolean composite checks (0-3) |
