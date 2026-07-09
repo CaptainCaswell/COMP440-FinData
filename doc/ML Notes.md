@@ -6,6 +6,8 @@ Best code doesn't need comments.
 
 Simple is better. Even extra steps/code to make things more readable are worth a little bit of overhead. Can be simplified after initial testing if efficiency is required.
 
+Don't plan to clean code later, it is way more difficult than cleaning now.
+
 ## Clustering
 
 ### Outliers

@@ -17,7 +17,7 @@ TARGET_COL = "future_5y_return"
 ID_COLS = ["ticker", "date", "sector"]
 
 # Clustering config
-K_RANGE = range( 2, 21 )
+K_RANGE = range( 2, 41 )
 MIN_CLUSTER_SIZE = 200
 RANDOM_STATE = 42
 COVARIANCE_TYPE = "diag"   # "diag" is much cheaper than "full" at this feature count
@@ -43,7 +43,7 @@ SEC_EXCLUDE = {
     "sector_Unknown"
 }
 
-GEN = "gmm"
+GEN = "1"
 
 class Tee:
     def __init__(self, *streams):
@@ -189,7 +189,7 @@ def run_clustering( df: pd.DataFrame, depth: int ) -> tuple:
 
 def main():
     ensure_data_directory()
-    log_file = open(f"data/cluster_log_{GEN}.txt", "w")
+    log_file = open(f"data/cluster_log_gmm_gen{GEN}.txt", "w")
     sys.stdout = Tee(sys.__stdout__, log_file)
 
     print( "Loading feature dataset..." )
@@ -208,8 +208,8 @@ def main():
 
     while depth < MAX_DEPTH:
         clustered_df, summary, best_cluster_id = run_clustering( current_df, depth )
-        clustered_df.to_parquet( f"data/clustered_data_{GEN}_depth{depth}.parquet" )
-        summary.to_csv( f"data/cluster_summary_{GEN}_depth{depth}.csv", index=False)
+        clustered_df.to_parquet( f"data/clustered_data_gmm_gen{GEN}_depth{depth}.parquet" )
+        summary.to_csv( f"data/cluster_summary_gmm_gen{GEN}_depth{depth}.csv", index=False)
 
         if best_cluster_id is None:
             print(f"[Depth {depth}] No reliable cluster found — stopping.")

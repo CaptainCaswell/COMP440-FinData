@@ -45,7 +45,7 @@ The exact models and strategies may evolve as the project progresses.
 3. Documentation (30%)
     * Minimal but clear summary of what was done
     * Enough detail to understand the work and results
-    * Research Poster
+    * Research Report
 
 ## Student Goals
 

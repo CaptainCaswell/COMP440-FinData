@@ -37,6 +37,7 @@ LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
 MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
 MIN_PRICE = 1.00
+MAX_PRICE = 50000
 
 INFO_MAP = None
 MARKET_DAILY_RET = None
@@ -168,7 +169,8 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
         df["pe"] = np.nan
 
     # Future Price
-    df["future_5y_return"] = ( df["price"].shift( -TIME_WINDOWS["5y"] ) / df["price"] - 1 )
+    for label, span in TIME_WINDOWS.items():
+        df[f"future_ret_{label}"] = df["price"].shift( -span ) / df["price"] - 1
 
     # Returns
     for label, span in TIME_WINDOWS.items():
@@ -205,11 +207,12 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
     df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
 
     # Drop if core stats not available
-    core_cols = ["price", "beta_1y", "alpha_1y", "future_5y_return", "1y_trend", "5y_trend", "monotonic_score_daily"]
+    core_cols = ["price", "beta_1y", "alpha_1y", "future_ret_1y", "future_ret_5y", "1y_trend", "5y_trend", "monotonic_score_daily"]
     df = df.dropna( subset=core_cols )
 
     # Drop rows with unrealistic price
     df = df[df["price"] >= MIN_PRICE]
+    df = df[df["price"] <= MAX_PRICE]
 
     return df
 
