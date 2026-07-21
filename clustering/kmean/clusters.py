@@ -10,11 +10,18 @@ import sys
 
 # Files
 STOCK_FILE = "data/data.parquet"
-CLUSTERED_FILE = "data/clustered_data.parquet"
-SUMMARY_FILE = "data/cluster_summary.csv"
+LOG_FOLDER = "logs/kmean"
 
 # Columns
-TARGET_COL = "future_5y_return"
+TARGET_COLS = [
+    "future_ret_1d",
+    "future_ret_1w",
+    "future_ret_1m",
+    "future_ret_6m",
+    "future_ret_1y",
+    "future_ret_3y",
+    "future_ret_5y"
+]
 ID_COLS = ["ticker", "date", "sector"]
 
 # Clustering config
@@ -34,14 +41,18 @@ PRIM_EXCLUDE = {
 }
 
 SEC_EXCLUDE = {
-    "excess_ret_1y", "excess_ret_5y",
-    "trend_vs_sector_1y", "trend_vs_sector_5y",
-    "drawdown_rel_1y", "drawdown_rel_5y",
-    "excess_vs_market_1y", "trend_vs_market_1y",
-    "risk_adjusted_1y", "risk_adjusted_5y",
+    "excess_ret_1y",
+    "excess_ret_5y",
+    "trend_vs_sector_1y",
+    "trend_vs_sector_5y",
+    "drawdown_rel_1y",
+    "drawdown_rel_5y",
+    "excess_vs_market_1y",
+    "trend_vs_market_1y",
+    "risk_adjusted_1y",
+    "risk_adjusted_5y",
     "quality_score",
-    "sector_Unknown",
-    "pe"
+    "sector_Unknown"
 }
 
 GEN = 1
@@ -69,9 +80,8 @@ def load_data() -> pd.DataFrame:
 def select_feature_columns( df: pd.DataFrame ) -> list:
     # Create list of columns for ML
     numeric_cols = df.select_dtypes( include=[np.number] ).columns.tolist()
-    exclude = set( ID_COLS ) | { TARGET_COL } | PRIM_EXCLUDE | SEC_EXCLUDE
+    exclude = set( ID_COLS ) | set( TARGET_COLS ) | PRIM_EXCLUDE | SEC_EXCLUDE
     return [c for c in numeric_cols if c not in exclude]
-    return [c for c in numeric_cols if c not in exclude and not c.endswith( "_market" )]
 
 def prepare_features( df: pd.DataFrame, feature_cols: list ) -> pd.DataFrame:
     # Replace any missing cells with median value
@@ -111,34 +121,57 @@ def choose_k( scaled_features: np.ndarray, k_range: range, sample_size: int = 20
 
 def summarize_clusters( df: pd.DataFrame, cluster_col: str = "cluster" ) -> pd.DataFrame:
     #
-    overall_mean = df[TARGET_COL].mean()
+    overall_means = {
+        col: df[col].mean() for col in TARGET_COLS
+    }
 
     rows = []
 
     for cluster_id, group in df.groupby( cluster_col ):
 
-        target = group[TARGET_COL]
-        q25, q75 = target.quantile(0.25), target.quantile(0.75)
-        mean_val = target.mean()
-        median_val = target.median()
+        target_stats = {}
+
+        for col in TARGET_COLS:
+            target = group[col]
+
+            q25, q75 = target.quantile(0.25), target.quantile(0.75)
+            mean_val = target.mean()
+            median_val = target.median()
+
+            target_stats[f"{col}_mean"] = mean_val
+            target_stats[f"{col}_median"] = median_val
+            target_stats[f"{col}_trimmed_mean"] = trim_mean( target, proportiontocut=0.10 )
+            target_stats[f"{col}_std"] = target.std()
+            target_stats[f"{col}_iqr"] = q75 - q25
+            target_stats[f"{col}_vs_overall"] = mean_val - overall_means[col]
+
+        # Weighted mean of medians
+        target_stats["overall_score"] = (
+            target_stats["future_ret_1d_median"] * 0.05 +
+            target_stats["future_ret_1w_median"] * 0.05 +
+            target_stats["future_ret_6m_median"] * 0.10 +
+            target_stats["future_ret_1y_median"] * 0.20 +
+            target_stats["future_ret_3y_median"] * 0.25 +
+            target_stats["future_ret_5y_median"] * 0.35
+        )
 
         rows.append({
             "cluster": cluster_id,
             "count": len(group),
-            "mean_future_5y_return": mean_val,
-            "median_future_5y_return": median_val,
-            "trimmed_mean_future_5y_return": trim_mean(target, proportiontocut=0.10),
-            "std_future_5y_return": target.std(),
-            "iqr_future_5y_return": q75 - q25,
-            "skew_ratio": mean_val / median_val if median_val != 0 else np.nan,
-            "vs_overall_mean": mean_val - overall_mean,
+
+            **target_stats,
+
+            
+
             "avg_beta_1y": group["beta_1y"].mean(),
             "avg_1y_trend": group["1y_trend"].mean(),
             "avg_5y_drawdown": group["5y_drawdown"].mean(),
+
             "reliable": len(group) >= MIN_CLUSTER_SIZE
         })
 
-    summary = pd.DataFrame( rows ).sort_values( "trimmed_mean_future_5y_return", ascending=False ).reset_index( drop=True )
+    summary = pd.DataFrame( rows ).sort_values( "overall_score", ascending=False ).reset_index( drop=True )
+
     return summary
 
 def run_clustering( df: pd.DataFrame, depth: int ) -> tuple:
@@ -170,9 +203,25 @@ def run_clustering( df: pd.DataFrame, depth: int ) -> tuple:
     km = MiniBatchKMeans(n_clusters=best_k, random_state=RANDOM_STATE, n_init=10)
     df["cluster"] = km.fit_predict(scaled)
  
-    print("\nSummarizing clusters by mean future_5y_return...\n")
+    print("\nSummarizing clusters by future returns...\n")
+
     summary = summarize_clusters(df)
-    print(summary.to_string(index=False))
+
+    summary_print = summary[
+        [
+            "cluster",
+            "count",
+            "overall_score",
+            "future_ret_1y_median",
+            "future_ret_3y_median",
+            "future_ret_5y_median",
+            "avg_beta_1y",
+            "avg_1y_trend",
+            "avg_5y_drawdown"
+        ]
+    ]
+
+    print(summary_print.to_string(index=False))
 
     reliable = summary[summary["reliable"]]
     if reliable.empty:
@@ -182,7 +231,7 @@ def run_clustering( df: pd.DataFrame, depth: int ) -> tuple:
     return df, summary, best_cluster_id
     
 def main():
-    log_file = open(f"data/cluster_log_gen{GEN}.txt", "w")
+    log_file = open(f"{LOG_FOLDER}/cluster_log_gen{GEN}.txt", "w")
     sys.stdout = Tee(sys.__stdout__, log_file)
 
     print( "Loading feature dataset..." )
@@ -191,18 +240,21 @@ def main():
 
     # Clean any rows with no target
     before = len( df )
-    df = df.dropna( subset=[TARGET_COL] ).reset_index( drop=True )
+
+    df = df.dropna( subset=TARGET_COLS ).reset_index( drop=True )
+    
     after = len( df )
     dropped = before - after
-    print( f"Dropped {dropped} rows missing {TARGET_COL}\n")
+    
+    print( f"Dropped {dropped} rows missing future returns\n")
 
     depth = 0
     current_df = df
 
     while depth < MAX_DEPTH:
         clustered_df, summary, best_cluster_id = run_clustering( current_df, depth )
-        clustered_df.to_parquet( f"data/clustered_data_gen{GEN}_depth{depth}.parquet" )
-        summary.to_csv( f"data/cluster_summary_gen{GEN}_depth{depth}.csv", index=False)
+        clustered_df.to_parquet( f"{LOG_FOLDER}/clustered_data_gen{GEN}_depth{depth}.parquet" )
+        summary.to_csv( f"{LOG_FOLDER}/cluster_summary_gen{GEN}_depth{depth}.csv", index=False)
 
         if best_cluster_id is None:
             print(f"[Depth {depth}] No reliable cluster found — stopping.")
@@ -210,7 +262,8 @@ def main():
 
         best_row = summary[summary["cluster"] == best_cluster_id].iloc[0]
         print( f"\n[depth {depth}] Best cluster: #{best_cluster_id} "
-               f"(n={int(best_row['count'])}, trimmed mean={best_row['trimmed_mean_future_5y_return']:.2%})" )
+               f"(n={int(best_row['count'])}, overall score={best_row['overall_score']:.2%}, "
+               f"5y median={best_row['future_ret_5y_median']:.2%})" )
 
         next_df = clustered_df[clustered_df["cluster"] == best_cluster_id].drop(columns=["cluster"])
 
