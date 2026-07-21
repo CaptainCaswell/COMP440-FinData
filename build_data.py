@@ -37,7 +37,7 @@ LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
 MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
 MIN_PRICE = 1.00
-MAX_PRICE = 50000
+MAX_PRICE = 5000
 
 INFO_MAP = None
 MARKET_DAILY_RET = None
@@ -117,6 +117,13 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
     df["ticker"] = ticker
     df["price"] = series
 
+    # Remove improbable prices
+    df = df[( df["price"] >= MIN_PRICE ) & ( df["price"] <= MAX_PRICE )]
+
+    # Remove tickers without enough data
+    if len( df ) < min_length:
+        return None
+
     # Check for anomolous price changes
     daily_ret = df["price"].pct_change()
     above_floor = df["price"] >= MIN_PRICE
@@ -156,7 +163,7 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
         market_cap = df["price"] * shares
         df["log_market_cap"] = np.log( market_cap )
     else:
-        df["log_market_cap"] = np.nan
+        None
 
     # PE Ratio
     trailing_pe = info["trailing_pe"]
@@ -195,10 +202,6 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
     # Trend
     log_price = np.log( df["price"] )
 
-    # def slope(x):
-    #     return np.polyfit( np.arange(len(x)), x, 1 )[0]
-    # df["1y_trend"] = log_price.rolling( TIME_WINDOWS["1y"] ).apply( slope, raw=True )
-    # df["5y_trend"] = log_price.rolling( TIME_WINDOWS["5y"] ).apply( slope, raw=True )
     # Faster
     df["1y_trend"] = rolling_slope( log_price, TIME_WINDOWS["1y"] )
     df["5y_trend"] = rolling_slope( log_price, TIME_WINDOWS["5y"] )
@@ -209,10 +212,6 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
     # Drop if core stats not available
     core_cols = ["price", "beta_1y", "alpha_1y", "future_ret_1y", "future_ret_5y", "1y_trend", "5y_trend", "monotonic_score_daily"]
     df = df.dropna( subset=core_cols )
-
-    # Drop rows with unrealistic price
-    df = df[df["price"] >= MIN_PRICE]
-    df = df[df["price"] <= MAX_PRICE]
 
     return df
 
