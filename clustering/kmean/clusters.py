@@ -87,6 +87,16 @@ OTHER_EXCLUDE = {
     "pe"
 }
 
+RETURN_EXCLUDE = {
+    "ret_1d",
+    "ret_1w",
+    "ret_1m",
+    "ret_6m",
+    "ret_1y",
+    "ret_3y",
+    "ret_5y"
+}
+
 GEN = 1
 
 class Tee:
@@ -112,7 +122,17 @@ def load_data() -> pd.DataFrame:
 def select_feature_columns( df: pd.DataFrame ) -> list:
     # Create list of columns for ML
     numeric_cols = df.select_dtypes( include=[np.number] ).columns.tolist()
-    exclude = set( ID_COLS ) | set( TARGET_COLS ) | JUNK_EXCLUDE | SEC_EXCLUDE | {c for c in df.columns if c.startswith("future_")} | OTHER_EXCLUDE
+    exclude = (
+        set( ID_COLS )
+        | set( TARGET_COLS )
+        | JUNK_EXCLUDE
+        | SEC_EXCLUDE
+        | {c for c in df.columns if c.startswith("future_")}
+        | {c for c in df.columns if c.startswith("spy_")}
+        | OTHER_EXCLUDE
+        | RETURN_EXCLUDE
+    )
+
     return [c for c in numeric_cols if c not in exclude]
 
 def prepare_features( df: pd.DataFrame, feature_cols: list ) -> tuple:
@@ -193,8 +213,12 @@ def  fit_and_evaluate( train_df: pd.DataFrame, test_df: pd.DataFrame ) -> tuple:
         "cluster",
         "count",
         "overall_score",
+        "future_ret_1y_mean",
+        "future_ret_5y_mean",
         "future_ret_1y_median",
         "future_ret_5y_median",
+        "future_excess_1y_mean",
+        "future_excess_5y_mean",
         "future_excess_1y_median",
         "future_excess_5y_median"
     ]].to_string( index=False ) )
@@ -215,8 +239,12 @@ def  fit_and_evaluate( train_df: pd.DataFrame, test_df: pd.DataFrame ) -> tuple:
         "cluster",
         "count",
         "overall_score",
+        "future_ret_1y_mean",
+        "future_ret_5y_mean",
         "future_ret_1y_median",
         "future_ret_5y_median",
+        "future_excess_1y_mean",
+        "future_excess_5y_mean",
         "future_excess_1y_median",
         "future_excess_5y_median"
     ]].to_string( index=False ) )
@@ -287,22 +315,19 @@ def summarize_clusters( df: pd.DataFrame, cluster_col: str = "cluster" ) -> pd.D
 
         # Weighted mean of medians
         target_stats["overall_score"] = (
-            target_stats["future_ret_1d_median"] * 0.05 +
-            target_stats["future_ret_1w_median"] * 0.05 +
-            target_stats["future_ret_1m_median"] * 0.10 +
-            target_stats["future_ret_6m_median"] * 0.10 +
-            target_stats["future_ret_1y_median"] * 0.20 +
-            target_stats["future_ret_3y_median"] * 0.25 +
-            target_stats["future_ret_5y_median"] * 0.25
+            target_stats["future_excess_1d_median"] * 0.02 +
+            target_stats["future_excess_1w_median"] * 0.04 +
+            target_stats["future_excess_1m_median"] * 0.04 +
+            target_stats["future_excess_6m_median"] * 0.05 +
+            target_stats["future_excess_1y_median"] * 0.15 +
+            target_stats["future_excess_3y_median"] * 0.20 +
+            target_stats["future_excess_5y_median"] * 0.50
         )
-
         rows.append({
             "cluster": cluster_id,
             "count": len(group),
 
             **target_stats,
-
-            
 
             "avg_beta_1y": group["beta_1y"].mean(),
             "avg_1y_trend": group["1y_trend"].mean(),
