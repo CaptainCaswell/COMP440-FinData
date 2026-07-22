@@ -42,16 +42,18 @@ MAX_PRICE = 5000
 INFO_MAP = None
 MARKET_DAILY_RET = None
 SPY_FUTURE_RETURNS = None
+SPY_RETURNS = None
 VOLUME_MAP = None
 MIN_VOLUME = 10000
 MAX_CHANGE = 1.00
 
-def init_worker(info_map, market_daily_ret, spy_future_returns):
-    global INFO_MAP, MARKET_DAILY_RET, SPY_FUTURE_RETURNS, VOLUME_MAP
+def init_worker(info_map, market_daily_ret, spy_future_returns, spy_returns):
+    global INFO_MAP, MARKET_DAILY_RET, SPY_FUTURE_RETURNS, SPY_RETURNS, VOLUME_MAP
     
     INFO_MAP = info_map
     MARKET_DAILY_RET = market_daily_ret
     SPY_FUTURE_RETURNS = spy_future_returns
+    SPY_RETURNS = spy_returns
 
 def ensure_data_directory():
     # Create bath if it doesn't exist
@@ -193,6 +195,10 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
     for label, span in TIME_WINDOWS.items():
         df[f"ret_{label}"] = df["price"].pct_change( span )
 
+    # SPY benchmark returns
+    for label in TIME_WINDOWS.keys():
+        df[f"spy_ret_{label}"] = SPY_RETURNS[label].reindex(df.index)
+
     # Monotonic
     df["monotonic_score_daily"] = (
         df["price"].pct_change().gt( 0 )
@@ -266,6 +272,11 @@ def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
     for label, span in TIME_WINDOWS.items():
         spy_future_returns[label] = ( spy_price.shift( -span ) / spy_price - 1 )
 
+    spy_returns = {}
+
+    for label, span in TIME_WINDOWS.items():
+        spy_returns[label] = spy_price.pct_change( span )
+
     stride_dates = set( close.index[::WINDOW_STRIDE] )
 
     df_list = []
@@ -276,7 +287,7 @@ def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
     
     # min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
     
-    with ProcessPoolExecutor( max_workers=n_workers, initializer=init_worker, initargs=(info_map, market_daily_ret, spy_future_returns ) ) as executor:
+    with ProcessPoolExecutor( max_workers=n_workers, initializer=init_worker, initargs=(info_map, market_daily_ret, spy_future_returns, spy_returns ) ) as executor:
         futures = {
             executor.submit( process_ticker, ticker, close[ticker], volume[ticker] ): ticker
             for ticker in close.columns
@@ -397,8 +408,8 @@ def build_comparisons( stock_data: pd.DataFrame, sector_data: pd.DataFrame ) -> 
     df = df.merge( market_data, on=["date"], how="left" )
 
     # Sector relative features
-    df["excess_ret_1y"] = df["ret_1y"] - df["sec_avg_ret_1y"]
-    df["excess_ret_5y"] = df["ret_5y"] - df["sec_avg_ret_5y"]
+    df["excess_ret_1y"] = df["ret_1y"] - df["spy_ret_1y"]
+    df["excess_ret_5y"] = df["ret_5y"] - df["spy_ret_5y"]
 
     df["trend_vs_sector_1y"] = df["1y_trend"] - df["sec_avg_1y_trend"]
     df["trend_vs_sector_5y"] = df["5y_trend"] - df["sec_avg_5y_trend"]
