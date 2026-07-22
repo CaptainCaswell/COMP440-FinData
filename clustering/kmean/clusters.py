@@ -32,7 +32,7 @@ RANDOM_STATE = 42
 MAX_DEPTH = 5
 MIN_ROWS = 5000
 TEST_FRACTION = 0.2
-GAP_DAYS = 1254
+GAP_DAYS = 252
 
 PRIM_EXCLUDE = {
     "price",
@@ -98,7 +98,7 @@ def load_data() -> pd.DataFrame:
 def select_feature_columns( df: pd.DataFrame ) -> list:
     # Create list of columns for ML
     numeric_cols = df.select_dtypes( include=[np.number] ).columns.tolist()
-    exclude = set( ID_COLS ) | set( TARGET_COLS ) | PRIM_EXCLUDE | SEC_EXCLUDE
+    exclude = set( ID_COLS ) | set( TARGET_COLS ) | PRIM_EXCLUDE | SEC_EXCLUDE | {c for c in df.columns if c.startswith("future_")}
     return [c for c in numeric_cols if c not in exclude]
 
 def prepare_features( df: pd.DataFrame, feature_cols: list ) -> tuple:
@@ -123,10 +123,9 @@ def split_train_test( df: pd.DataFrame ) -> tuple:
     n_dates = len( dates_sorted )
 
     test_start_idx = int( n_dates * ( 1 - TEST_FRACTION ) )
-    test_start_date = dates_sorted[test_start_idx]
+    test_start_date = pd.Timestamp(dates_sorted[test_start_idx])
 
-    gap_start_idx = max( test_start_idx - GAP_DAYS, 0 )
-    train_cutoff_date = dates_sorted[gap_start_idx]
+    train_cutoff_date = test_start_date - pd.Timedelta(days=GAP_DAYS)
 
     train_df = df[df["date"] < train_cutoff_date].reset_index( drop=True )
     test_df = df[df["date"] >= test_start_date].reset_index( drop=True )
