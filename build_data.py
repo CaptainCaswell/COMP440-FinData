@@ -41,14 +41,17 @@ MAX_PRICE = 5000
 
 INFO_MAP = None
 MARKET_DAILY_RET = None
+SPY_FUTURE_RETURNS = None
 VOLUME_MAP = None
 MIN_VOLUME = 10000
 MAX_CHANGE = 1.00
 
-def init_worker( info_map, market_daily_ret ):
-    global INFO_MAP, MARKET_DAILY_RET, VOLUME_MAP
+def init_worker(info_map, market_daily_ret, spy_future_returns):
+    global INFO_MAP, MARKET_DAILY_RET, SPY_FUTURE_RETURNS, VOLUME_MAP
+    
     INFO_MAP = info_map
     MARKET_DAILY_RET = market_daily_ret
+    SPY_FUTURE_RETURNS = spy_future_returns
 
 def ensure_data_directory():
     # Create bath if it doesn't exist
@@ -177,7 +180,14 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
 
     # Future Price
     for label, span in TIME_WINDOWS.items():
+        # Return windows
         df[f"future_ret_{label}"] = df["price"].shift( -span ) / df["price"] - 1
+
+        # Market return
+        spy_future = SPY_FUTURE_RETURNS[label].reindex(df.index)
+
+        # Excess return vs SPY
+        df[f"future_excess_{label}"] = ( df[f"future_ret_{label}"] - spy_future )
 
     # Returns
     for label, span in TIME_WINDOWS.items():
@@ -249,6 +259,13 @@ def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
     daily_returns = close.pct_change()
     market_daily_ret = daily_returns.median(axis=1)
 
+    spy_price = close["SPY"]
+
+    spy_future_returns = {}
+
+    for label, span in TIME_WINDOWS.items():
+        spy_future_returns[label] = ( spy_price.shift( -span ) / spy_price - 1 )
+
     stride_dates = set( close.index[::WINDOW_STRIDE] )
 
     df_list = []
@@ -259,7 +276,7 @@ def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
     
     # min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
     
-    with ProcessPoolExecutor( max_workers=n_workers, initializer=init_worker, initargs=(info_map, market_daily_ret) ) as executor:
+    with ProcessPoolExecutor( max_workers=n_workers, initializer=init_worker, initargs=(info_map, market_daily_ret, spy_future_returns ) ) as executor:
         futures = {
             executor.submit( process_ticker, ticker, close[ticker], volume[ticker] ): ticker
             for ticker in close.columns
