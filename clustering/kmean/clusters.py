@@ -14,13 +14,23 @@ LOG_FOLDER = "logs/kmean"
 
 # Columns
 TARGET_COLS = [
+    # Absolute returns
     "future_ret_1d",
     "future_ret_1w",
     "future_ret_1m",
     "future_ret_6m",
     "future_ret_1y",
     "future_ret_3y",
-    "future_ret_5y"
+    "future_ret_5y",
+
+    # Relative returns
+    "future_excess_1d",
+    "future_excess_1w",
+    "future_excess_1m",
+    "future_excess_6m",
+    "future_excess_1y",
+    "future_excess_3y",
+    "future_excess_5y"
 ]
 ID_COLS = ["ticker", "date", "sector"]
 
@@ -34,7 +44,7 @@ MIN_ROWS = 5000
 TEST_FRACTION = 0.2
 GAP_DAYS = 252
 
-PRIM_EXCLUDE = {
+JUNK_EXCLUDE = {
     "price",
     "sector_size",
     "rows",
@@ -73,6 +83,10 @@ SEC_EXCLUDE = {
     "sector_Unknown",
 }
 
+OTHER_EXCLUDE = {
+    "pe"
+}
+
 GEN = 1
 
 class Tee:
@@ -98,7 +112,7 @@ def load_data() -> pd.DataFrame:
 def select_feature_columns( df: pd.DataFrame ) -> list:
     # Create list of columns for ML
     numeric_cols = df.select_dtypes( include=[np.number] ).columns.tolist()
-    exclude = set( ID_COLS ) | set( TARGET_COLS ) | PRIM_EXCLUDE | SEC_EXCLUDE | {c for c in df.columns if c.startswith("future_")}
+    exclude = set( ID_COLS ) | set( TARGET_COLS ) | JUNK_EXCLUDE | SEC_EXCLUDE | {c for c in df.columns if c.startswith("future_")} | OTHER_EXCLUDE
     return [c for c in numeric_cols if c not in exclude]
 
 def prepare_features( df: pd.DataFrame, feature_cols: list ) -> tuple:
@@ -174,8 +188,16 @@ def  fit_and_evaluate( train_df: pd.DataFrame, test_df: pd.DataFrame ) -> tuple:
 
     print( "\nSummarizing TRAIN clusters by future returns...\n" )
     train_summary = summarize_clusters( train_df )
-    print( train_summary[["cluster", "count", "overall_score", "future_ret_1y_median",
-                           "future_ret_3y_median", "future_ret_5y_median"]].to_string( index=False ) )
+
+    print( train_summary[[
+        "cluster",
+        "count",
+        "overall_score",
+        "future_ret_1y_median",
+        "future_ret_5y_median",
+        "future_excess_1y_median",
+        "future_excess_5y_median"
+    ]].to_string( index=False ) )
 
     reliable = train_summary[train_summary["reliable"]]
     if reliable.empty:
@@ -189,8 +211,15 @@ def  fit_and_evaluate( train_df: pd.DataFrame, test_df: pd.DataFrame ) -> tuple:
 
     print( "\nSummarizing TEST clusters by future returns (same assignments, unseen data)...\n" )
     test_summary = summarize_clusters( test_df )
-    print( test_summary[["cluster", "count", "overall_score", "future_ret_1y_median",
-                          "future_ret_3y_median", "future_ret_5y_median"]].to_string( index=False ) )
+    print( test_summary[[
+        "cluster",
+        "count",
+        "overall_score",
+        "future_ret_1y_median",
+        "future_ret_5y_median",
+        "future_excess_1y_median",
+        "future_excess_5y_median"
+    ]].to_string( index=False ) )
 
     test_match = test_summary[test_summary["cluster"] == best_cluster_id]
     if test_match.empty:
@@ -260,10 +289,11 @@ def summarize_clusters( df: pd.DataFrame, cluster_col: str = "cluster" ) -> pd.D
         target_stats["overall_score"] = (
             target_stats["future_ret_1d_median"] * 0.05 +
             target_stats["future_ret_1w_median"] * 0.05 +
+            target_stats["future_ret_1m_median"] * 0.10 +
             target_stats["future_ret_6m_median"] * 0.10 +
             target_stats["future_ret_1y_median"] * 0.20 +
             target_stats["future_ret_3y_median"] * 0.25 +
-            target_stats["future_ret_5y_median"] * 0.35
+            target_stats["future_ret_5y_median"] * 0.25
         )
 
         rows.append({
