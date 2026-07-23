@@ -21,28 +21,6 @@ STOCK_FILE = "data/data.parquet"
 LOG_FOLDER = "logs/classification"
 
 # Columns
-TARGET_COLS = [
-    # Absolute returns
-    "future_ret_1d",
-    "future_ret_1w",
-    "future_ret_1m",
-    "future_ret_6m",
-    "future_ret_1y",
-    "future_ret_3y",
-    "future_ret_5y",
-
-    # Relative returns
-    "future_excess_1d",
-    "future_excess_1w",
-    "future_excess_1m",
-    "future_excess_6m",
-    "future_excess_1y",
-    "future_excess_3y",
-    "future_excess_5y"
-]
-
-ID_COLS = ["ticker", "date", "sector"]
-
 LABEL_SOURCE_COL = "future_excess_5y"   # beats-market label is derived from this
 LABEL_COL = "beats_market_5y"
 
@@ -202,7 +180,7 @@ def main():
     print( f"Load {len(df):,} rows, {df['ticker'].nunique()} tickers\n" )
 
     before = len( df )
-    df = df.dropna( subset=TARGET_COLS ).reset_index( drop=True )
+    df = df.dropna( subset=LABEL_SOURCE_COL ).reset_index( drop=True )
     dropped = before - len( df )
     print( f"Dropped {dropped} rows missing future returns\n" )
 
@@ -264,7 +242,8 @@ def main():
         max_depth=8,
         min_samples_leaf=50,
         random_state=RANDOM_STATE,
-        n_jobs=-1
+        n_jobs=-1,
+        class_weight="balanced"
     )
     rf.fit( train_features, y_train )
 
