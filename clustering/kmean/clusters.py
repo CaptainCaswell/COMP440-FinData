@@ -4,7 +4,12 @@ import os
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import MiniBatchKMeans
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import (
+    silhouette_score,
+    calinski_harabasz_score,
+    davies_bouldin_score,
+    adjusted_rand_score,
+)
 from scipy.stats import trim_mean
 import sys
 
@@ -34,7 +39,6 @@ TARGET_COLS = [
 ]
 ID_COLS = ["ticker", "date", "sector"]
 
-# Clustering config
 K_RANGE = range( 2, 11 )
 MIN_CLUSTER_SIZE = 200
 RANDOM_STATE = 42
@@ -43,6 +47,14 @@ MAX_DEPTH = 5
 MIN_ROWS = 5000
 TEST_FRACTION = 0.2
 GAP_DAYS = 252
+
+CLUSTER_ONLY_EXCLUDE = {
+    "log_market_cap",
+    "beta_1y",
+}
+
+N_BOOTSTRAPS = 8
+BOOTSTRAP_FRAC = 0.7
 
 JUNK_EXCLUDE = {
     "price",
@@ -135,6 +147,16 @@ def select_feature_columns( df: pd.DataFrame ) -> list:
 
     return [c for c in numeric_cols if c not in exclude]
 
+def select_clustering_feature_columns( df: pd.DataFrame ) -> list:
+    base_cols = select_feature_columns( df )
+    return [
+        c for c in base_cols
+        if c not in CLUSTER_ONLY_EXCLUDE
+        and not c.startswith( "sector_" )
+        and not c.startswith( "sec_avg_" )
+        and not c.endswith( "_market" )
+    ]
+
 def prepare_features( df: pd.DataFrame, feature_cols: list ) -> tuple:
     # Replace any missing cells with median value
     features = df[feature_cols].copy()
@@ -174,9 +196,13 @@ def  fit_and_evaluate( train_df: pd.DataFrame, test_df: pd.DataFrame ) -> tuple:
     train_df = train_df.copy()
     test_df = test_df.copy()
 
-    feature_cols = select_feature_columns( train_df )
-    print( f"Using {len(feature_cols)} features for clustering:" )
+    feature_cols = select_clustering_feature_columns( train_df )
+    print( f"Using {len(feature_cols)} features for clustering (size/beta/sector held out):" )
     print( f"  {feature_cols}\n" )
+
+    print( "Choosing k by feature geometry (silhouette/CH/DB + bootstrap stability)..." )
+    best_k, k_results = choose_k_by_geometry( train_df, feature_cols, K_RANGE )
+    print( f"\nBest k = {best_k} (bootstrap_ARI={k_results[best_k]['stability_ari']:.4f})\n" )
 
     print( "Preparing training features (imputing with train medians)..." )
     train_features, medians = prepare_features( train_df, feature_cols )
@@ -194,10 +220,6 @@ def  fit_and_evaluate( train_df: pd.DataFrame, test_df: pd.DataFrame ) -> tuple:
     scaler = StandardScaler()
     train_scaled = scaler.fit_transform( train_features )
     test_scaled = scaler.transform( test_features )
-
-    print( "\nSearching for best k via silhouette score (train only)..." )
-    best_k, scores = choose_k( train_scaled, K_RANGE )
-    print( f"\nBest k = {best_k} (silhouette={scores[best_k]:.4f})\n" )
 
     print( f"Fitting final MiniBatchKMeans with k={best_k} on train only..." )
     km = MiniBatchKMeans( n_clusters=best_k, random_state=RANDOM_STATE, n_init=10 )
@@ -265,7 +287,6 @@ def  fit_and_evaluate( train_df: pd.DataFrame, test_df: pd.DataFrame ) -> tuple:
     return train_df, test_df, train_summary, test_summary, best_cluster_id
 
 def choose_k( scaled_features: np.ndarray, k_range: range, sample_size: int = 20000 ) -> tuple:
-    # 
     rng = np.random.RandomState( RANDOM_STATE )
 
     if len( scaled_features ) > sample_size:
@@ -286,6 +307,60 @@ def choose_k( scaled_features: np.ndarray, k_range: range, sample_size: int = 20
     best_k = max( scores, key=scores.get )
 
     return best_k, scores
+
+def choose_k_by_geometry( train_df: pd.DataFrame, feature_cols: list, k_range: range,
+                           sample_size: int = 20000, n_bootstraps: int = N_BOOTSTRAPS,
+                           bootstrap_frac: float = BOOTSTRAP_FRAC ) -> tuple:
+
+    features, _ = prepare_features( train_df, feature_cols )
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform( features )
+
+    rng = np.random.RandomState( RANDOM_STATE )
+    n = len( scaled )
+
+    if n > sample_size:
+        eval_idx = rng.choice( n, sample_size, replace=False )
+    else:
+        eval_idx = np.arange( n )
+    eval_set = scaled[eval_idx]
+
+    results = {}
+
+    for k in k_range:
+        km = MiniBatchKMeans( n_clusters=k, random_state=RANDOM_STATE, n_init=10 )
+        labels = km.fit_predict( scaled )
+
+        sil = silhouette_score( scaled[eval_idx], labels[eval_idx] )
+        ch = calinski_harabasz_score( scaled, labels )
+        db = davies_bouldin_score( scaled, labels )
+
+        bootstrap_labels = []
+        for b in range( n_bootstraps ):
+            boot_idx = rng.choice( n, size=int( n * bootstrap_frac ), replace=True )
+            boot_km = MiniBatchKMeans( n_clusters=k, random_state=RANDOM_STATE + b + 1, n_init=10 )
+            boot_km.fit( scaled[boot_idx] )
+            bootstrap_labels.append( boot_km.predict( eval_set ) )
+
+        ari_scores = [
+            adjusted_rand_score( bootstrap_labels[i], bootstrap_labels[j] )
+            for i in range( len( bootstrap_labels ) )
+            for j in range( i + 1, len( bootstrap_labels ) )
+        ]
+        stability = float( np.mean( ari_scores ) )
+
+        results[k] = {
+            "silhouette": sil,
+            "calinski_harabasz": ch,
+            "davies_bouldin": db,
+            "stability_ari": stability,
+        }
+
+        print( f"k={k}: silhouette={sil:.4f}  CH={ch:.1f}  DB={db:.4f}  bootstrap_ARI={stability:.4f}" )
+
+    best_k = max( results, key=lambda k: results[k]["stability_ari"] )
+
+    return best_k, results
 
 def summarize_clusters( df: pd.DataFrame, cluster_col: str = "cluster" ) -> pd.DataFrame:
     #
