@@ -75,6 +75,7 @@ def load_info_map() -> dict:
     for _, row in info_df.iterrows():
         info_map[row["ticker"]] = {
             "sector": row["sector"] if pd.notna(row["sector"]) else "Unknown",
+            "quote_type": row["quote_type"] if pd.notna( row["quote_type"] ) else "UNKNOWN",
             "shares_outstanding": row["shares_outstanding"],
             "trailing_pe": row["trailing_pe"],
         }
@@ -83,6 +84,7 @@ def load_info_map() -> dict:
 def get_info( ticker: str, info_map: dict ) -> dict:
     return info_map.get(ticker, {
         "sector": "Unknown",
+        "quote_type": "UNKNOWN",
         "shares_outstanding": None,
         "trailing_pe": None,
     } )
@@ -160,6 +162,7 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
     # Info
     info = get_info( ticker, INFO_MAP )
     df["sector"] = info["sector"]
+    df["quote_type"] = info["quote_type"]
 
     # Market Cap
     shares = info["shares_outstanding"]

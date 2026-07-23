@@ -46,7 +46,7 @@ def load_existing_info() -> pd.DataFrame:
         df = pd.read_parquet( INFO_FILE )
         print( f"Loaded existing info for {len(df)} tickers from {INFO_FILE}")
         return df
-    return pd.DataFrame( columns=["ticker", "sector", "shares_outstanding", "trailing_pe", "fetched_at"] )
+    return pd.DataFrame( columns=["ticker", "sector", "quote_type", "shares_outstanding", "trailing_pe", "fetched_at"] )
 
 def is_complete( row: pd.Series ) -> bool:
     # Check if row complete (No flag, )
@@ -81,6 +81,7 @@ def get_info( ticker:str ) -> dict:
         return {
             "ticker": ticker,
             "sector": info.get("sector") or "Unknown",
+            "quote_type": info.get( "quoteType" ) or "UNKNOWN",
             "shares_outstanding": finite_float( info.get( "sharesOutstanding", None ) ),
             "trailing_pe": finite_float( info.get( "trailingPE", None ) ),
             "fetch_success": True,
@@ -92,6 +93,7 @@ def get_info( ticker:str ) -> dict:
         return {
             "ticker": ticker,
             "sector": "Unknown",
+            "quote_type": info.get( "quoteType" ),
             "shares_outstanding": None,
             "trailing_pe": None,
             "fetch_success": False,
