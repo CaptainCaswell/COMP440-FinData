@@ -242,8 +242,7 @@ def main():
         max_depth=8,
         min_samples_leaf=50,
         random_state=RANDOM_STATE,
-        n_jobs=-1,
-        class_weight="balanced"
+        n_jobs=-1
     )
     rf.fit( train_features, y_train )
 
@@ -267,6 +266,19 @@ def main():
     results_df.to_csv( f"{LOG_FOLDER}/model_comparison_gen{GEN}.csv", index=False )
 
     test_df.to_parquet( f"{LOG_FOLDER}/test_scored_gen{GEN}.parquet" )
+
+    scored_df = test_df.copy()
+
+    scored_df["logreg_probability"] = logreg_proba
+    scored_df["logreg_prediction"] = logreg_pred
+
+    scored_df["rf_probability"] = rf_proba
+    scored_df["rf_prediction"] = rf_pred
+
+    scored_df.to_parquet(
+        f"{LOG_FOLDER}/test_scored_gen{GEN}.parquet",
+        index=False,
+    )
 
     print( "\n" + "=" * 60 )
     print( "CLASSIFICATION RUN COMPLETE" )
