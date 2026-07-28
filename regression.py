@@ -2,25 +2,36 @@ import pandas as pd
 import numpy as np
 import os
 from pathlib import Path
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    confusion_matrix,
+    classification_report,
 )
 import sys
 from classify_features import FEATURES
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from scipy.stats import spearmanr
 
 # Files
 STOCK_FILE = "data/data.parquet"
 LOG_FOLDER = "logs/regression"
 
 # Columns
-TARGET_COL = "future_excess_5y"
+LABEL_SOURCE_COL = "future_excess_5y"   # beats-market label is derived from this
+LABEL_COL = "beats_market_5y"
 
 RANDOM_STATE = 42
 TEST_FRACTION = 0.2
 GAP_DAYS = 252
+
+TOP_DECILE = 0.10   # fraction of highest-confidence test predictions to profile
 
 REMOVE_ETFS = True
 
@@ -40,6 +51,37 @@ class Tee:
 def ensure_log_directory():
     Path( LOG_FOLDER ).mkdir( parents=True, exist_ok=True )
 
+def evaluate_ranking( name: str, test_df: pd.DataFrame, y_pred_continuous: np.ndarray, n_deciles: int = 10 ) -> pd.DataFrame:
+    # Evaluates a continuous prediction as a RANKING rather than a threshold
+    # classification: does a higher predicted score actually correspond to
+    # a better future_excess_5y? This uses the full target information
+    # instead of collapsing it to beats/doesn't-beat.
+    scored = test_df.copy()
+    scored["pred_score"] = y_pred_continuous
+
+    rho, pval = spearmanr( scored["pred_score"], scored["future_excess_5y"] )
+    print( f"\n{name} — rank evaluation" )
+    print( f"Spearman rank correlation (predicted score vs actual future_excess_5y): {rho:.4f} (p={pval:.2e})" )
+
+    scored["decile"] = pd.qcut( scored["pred_score"], n_deciles, labels=False, duplicates="drop" )
+    decile_summary = (
+        scored.groupby( "decile" )["future_excess_5y"]
+        .agg( ["mean", "median", "count"] )
+        .sort_index( ascending=False )
+    )
+    print( "\nActual future_excess_5y by predicted-score decile (top decile first):" )
+    print( decile_summary.to_string() )
+
+    top_decile = scored["decile"].max()
+    bottom_decile = scored["decile"].min()
+    top = scored[scored["decile"] == top_decile]
+    bottom = scored[scored["decile"] == bottom_decile]
+
+    spread_mean = top["future_excess_5y"].mean() - bottom["future_excess_5y"].mean()
+    spread_median = top["future_excess_5y"].median() - bottom["future_excess_5y"].median()
+    print( f"\nTop-decile vs bottom-decile spread — mean: {spread_mean:.2%}, median: {spread_median:.2%}" )
+
+    return decile_summary
 
 def load_data() -> pd.DataFrame:
     if not os.path.isfile( STOCK_FILE ):
@@ -103,9 +145,68 @@ def split_train_test( df: pd.DataFrame ) -> tuple:
 
     return train_df, test_df
 
+
+def add_label( df: pd.DataFrame ) -> pd.DataFrame:
+    df = df.copy()
+    df[LABEL_COL] = ( df[LABEL_SOURCE_COL] > 0 ).astype( int )
+    return df
+
+
+def evaluate_model( name: str, y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray ) -> dict:
+    acc = accuracy_score( y_true, y_pred )
+    prec = precision_score( y_true, y_pred )
+    rec = recall_score( y_true, y_pred )
+    auc = roc_auc_score( y_true, y_proba )
+    cm = confusion_matrix( y_true, y_pred )
+
+    print( f"\n{'='*60}\n{name} — TEST performance\n{'='*60}" )
+    print( f"Accuracy:  {acc:.4f}" )
+    print( f"Precision: {prec:.4f}" )
+    print( f"Recall:    {rec:.4f}" )
+    print( f"ROC-AUC:   {auc:.4f}" )
+    print( "\nConfusion matrix (rows=actual, cols=predicted):" )
+    print( pd.DataFrame(
+        cm,
+        index=["actual_0", "actual_1"],
+        columns=["pred_0", "pred_1"]
+    ) )
+    print( "\nFull classification report:" )
+    print( classification_report( y_true, y_pred, target_names=["underperforms", "beats_market"] ) )
+
+    return {
+        "model": name,
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "roc_auc": auc,
+    }
+
+
+def profile_top_decile( name: str, test_df: pd.DataFrame, y_proba: np.ndarray, top_frac: float = TOP_DECILE ) -> pd.DataFrame:
+    # For the stocks the model was MOST confident would beat the market,
+    # what did they actually do? This ties the classifier's output back to
+    # the original "find good stocks" goal, beyond a bare accuracy number.
+    scored = test_df.copy()
+    scored["pred_proba"] = y_proba
+    scored = scored.sort_values( "pred_proba", ascending=False ).reset_index( drop=True )
+
+    n_top = max( 1, int( len( scored ) * top_frac ) )
+    top = scored.iloc[:n_top]
+    rest = scored.iloc[n_top:]
+
+    print( f"\n{name} — top {top_frac:.0%} most-confident test predictions (n={n_top}):" )
+    print( f"  Mean  future_excess_5y: {top['future_excess_5y'].mean():.2%}" )
+    print( f"  Median future_excess_5y: {top['future_excess_5y'].median():.2%}" )
+    print( f"  Actual beat-market rate: {top[LABEL_COL].mean():.2%}" )
+    print( f"  (vs. rest of test — mean: {rest['future_excess_5y'].mean():.2%}, "
+           f"beat-market rate: {rest[LABEL_COL].mean():.2%})" )
+
+    return top
+
+
 def main():
     ensure_log_directory()
-    log_file = open( f"{LOG_FOLDER}/regression_log.txt", "w" )
+    log_file = open( f"{LOG_FOLDER}/classification_log.txt", "w" )
     sys.stdout = Tee( sys.__stdout__, log_file )
 
     print( "Loading feature dataset..." )
@@ -113,16 +214,17 @@ def main():
     print( f"Load {len(df):,} rows, {df['ticker'].nunique()} tickers\n" )
 
     before = len( df )
-    df = df.dropna( subset=TARGET_COL ).reset_index( drop=True )
+    df = df.dropna( subset=LABEL_SOURCE_COL ).reset_index( drop=True )
     dropped = before - len( df )
     print( f"Dropped {dropped} rows missing future returns\n" )
 
-    print( f"Target: predicting {TARGET_COL}" )
-    print( f"Mean future excess return: {df[TARGET_COL].mean():.2%}\n" )
+    df = add_label( df )
+    print( f"Label '{LABEL_COL}' derived from {LABEL_SOURCE_COL} > 0" )
+    print( f"Overall beat-market rate: {df[LABEL_COL].mean():.2%}\n" )
 
     train_df, test_df = split_train_test( df )
-    print( f"Train mean excess return: {train_df[TARGET_COL].mean():.2%}" )
-    print( f"Test mean excess return: {test_df[TARGET_COL].mean():.2%}\n" )
+    print( f"Train beat-market rate: {train_df[LABEL_COL].mean():.2%}" )
+    print( f"Test  beat-market rate: {test_df[LABEL_COL].mean():.2%}\n" )
 
     feature_cols = select_feature_columns( train_df )
     print( f"Using {len(feature_cols)} features:" )
@@ -139,133 +241,91 @@ def main():
             print( f"Imputing {n_missing} missing values in '{col}' with TRAIN median ({medians[col]:.4f})" )
         test_features[col] = test_features[col].fillna( medians[col] )
 
-    y_train = train_df[TARGET_COL].values
-    y_test = test_df[TARGET_COL].values
+    print( "\nScaling features (scaler fit on train only)..." )
+    scaler = StandardScaler()
+    train_scaled = scaler.fit_transform( train_features )
+    test_scaled = scaler.transform( test_features )
 
-    # --- Primary model: Random Forest Regression ---
-    print("\nFitting Random Forest Regressor...")
+    y_train = train_df[LABEL_COL].values
+    y_test = test_df[LABEL_COL].values
 
-    rf = RandomForestRegressor(
+    results = []
+
+    # --- Primary model: Logistic Regression ---
+    print( "\nFitting Logistic Regression..." )
+    logreg = LogisticRegression( max_iter=1000, random_state=RANDOM_STATE )
+    logreg.fit( train_scaled, y_train )
+
+    logreg_pred = logreg.predict( test_scaled )
+    logreg_proba = logreg.predict_proba( test_scaled )[:, 1]
+    results.append( evaluate_model( "Logistic Regression", y_test, logreg_pred, logreg_proba ) )
+    profile_top_decile( "Logistic Regression", test_df, logreg_proba )
+
+    coef_table = pd.DataFrame({
+        "feature": feature_cols,
+        "coefficient": logreg.coef_[0]
+    }).sort_values( "coefficient", ascending=False )
+    print( "\nLogistic Regression coefficients (positive = associated with beating market):" )
+    print( coef_table.to_string( index=False ) )
+    coef_table.to_csv( f"{LOG_FOLDER}/logreg_coefficients_gen{GEN}.csv", index=False )
+
+    # --- Comparison baseline: Random Forest ---
+    print( "\nFitting Random Forest (comparison baseline)..." )
+    rf = RandomForestClassifier(
         n_estimators=300,
-        max_depth=10,
-        min_samples_leaf=100,
+        max_depth=8,
+        min_samples_leaf=50,
         random_state=RANDOM_STATE,
-        n_jobs=-1
+        n_jobs=-1,
+        class_weight="balanced"
     )
+    rf.fit( train_features, y_train )
 
-    rf.fit(
-        train_features,
-        y_train
-    )
-
-    pred = rf.predict( test_features )
-
-    print( "\n" + "="*60 )
-    print( "Random Forest Regression — TEST performance" )
-    print( "="*60 )
-
-    print( f"MAE: {mean_absolute_error(y_test, pred):.4f}" )
-
-    print( f"RMSE: {mean_squared_error(y_test, pred)**0.5:.4f}" )
-
-    print( f"R²: {r2_score(y_test, pred):.4f}" )
-
-    corr = np.corrcoef(pred, y_test)[0,1]
-
-    print( f"Prediction correlation: {corr:.4f}" )
-
-    # --- Ranking evaluation ---
-    scored = test_df.copy()
-    scored["predicted_excess_5y"] = pred
-
-    scored.to_parquet(
-        f"{LOG_FOLDER}/daily_ranked_predictions_gen{GEN}.parquet"
-    )
-
-    ranked = (
-        scored
-        .groupby("ticker")
-        .agg({
-            "predicted_excess_5y": "mean",
-            "future_excess_5y": "mean",
-            "sector": "first"
-        })
-        .sort_values(
-            "predicted_excess_5y",
-            ascending=False
-        )
-    )
-
-    print("\nTop 100 predicted stocks:")
-    print(ranked.head(100))
-
-    ranked.to_parquet(
-        f"{LOG_FOLDER}/ticker_rankings_gen{GEN}.parquet"
-    )
-
-    print("\nRanking performance:")
-
-    for pct in [0.01, 0.05, 0.10, 0.25]:
-
-        n = int(len(scored) * pct)
-
-        top = scored.iloc[:n]
-
-        print(f"\nTop {pct:.0%} ({n:,} stocks)")
-        print(
-            f"Predicted excess return: "
-            f"{top['predicted_excess_5y'].mean():.2%}"
-        )
-        print(
-            f"Actual excess return: "
-            f"{top['future_excess_5y'].mean():.2%}"
-        )
-        print(
-            f"Beat market rate: "
-            f"{(top['future_excess_5y'] > 0).mean():.2%}"
-        )
-
-    scored.to_parquet(
-        f"{LOG_FOLDER}/ranked_predictions_gen{GEN}.parquet"
-    )
-
+    rf_pred = rf.predict( test_features )
+    rf_proba = rf.predict_proba( test_features )[:, 1]
+    results.append( evaluate_model( "Random Forest", y_test, rf_pred, rf_proba ) )
+    profile_top_decile( "Random Forest", test_df, rf_proba )
 
     importance_table = pd.DataFrame({
         "feature": feature_cols,
         "importance": rf.feature_importances_
-    }).sort_values(
-        "importance",
-        ascending=False
+    }).sort_values( "importance", ascending=False )
+    print( "\nRandom Forest feature importances:" )
+    print( importance_table.to_string( index=False ) )
+    importance_table.to_csv( f"{LOG_FOLDER}/rf_importances_gen{GEN}.csv", index=False )
+
+    # --- Ranking approach: predict continuous future_excess_5y directly ---
+    y_train_continuous = train_df["future_excess_5y"].values
+    y_test_continuous = test_df["future_excess_5y"].values
+
+    print( "\nFitting Linear Regression (ranking)..." )
+    linreg = LinearRegression()
+    linreg.fit( train_scaled, y_train_continuous )
+    linreg_pred = linreg.predict( test_scaled )
+    evaluate_ranking( "Linear Regression", test_df, linreg_pred )
+
+    print( "\nFitting Random Forest Regressor (ranking, comparison)..." )
+    rf_reg = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=8,
+        min_samples_leaf=50,
+        random_state=RANDOM_STATE,
+        n_jobs=-1
     )
+    rf_reg.fit( train_features, y_train_continuous )
+    rf_reg_pred = rf_reg.predict( test_features )
+    evaluate_ranking( "Random Forest Regressor", test_df, rf_reg_pred )
 
-    print("\nRandom Forest feature importances:")
-    print(importance_table.to_string(index=False))
-
-    importance_table.to_csv(
-        f"{LOG_FOLDER}/rf_importances_gen{GEN}.csv",
-        index=False
-    )
-
-
-    test_df["prediction"] = pred
+    # --- Summary ---
+    results_df = pd.DataFrame( results )
+    print( f"\n{'='*60}\nMODEL COMPARISON\n{'='*60}" )
+    print( results_df.to_string( index=False ) )
+    results_df.to_csv( f"{LOG_FOLDER}/model_comparison_gen{GEN}.csv", index=False )
 
     test_df.to_parquet( f"{LOG_FOLDER}/test_scored_gen{GEN}.parquet" )
 
-    # Metrics
-    metrics = {
-        "mae": mean_absolute_error(y_test, pred),
-        "rmse": mean_squared_error(y_test,pred)**0.5,
-        "r2": r2_score(y_test,pred),
-        "correlation": corr
-    }
-
-    pd.DataFrame([metrics]).to_csv(
-        f"{LOG_FOLDER}/regression_metrics_gen{GEN}.csv",
-        index=False
-    )
-
     print( "\n" + "=" * 60 )
-    print( "REGRESSION RUN COMPLETE" )
+    print( "CLASSIFICATION RUN COMPLETE" )
     print( "=" * 60 )
 
 
