@@ -159,3 +159,22 @@ FEATURES = [
     # "sector_size_market",
     # "rows_market",
 ]
+
+SIMPLE_FEATURES = [
+    # "monotonic_score_daily",
+    # "5y_drawdown",
+
+    # "excess_ret_1y",
+    # "excess_ret_5y",
+
+    # "sec_avg_ret_5y",
+    # "sec_avg_5y_drawdown",
+
+    "ret_1d",
+    "ret_1w",
+    "ret_1m",
+    "ret_6m",
+    "ret_1y",
+    "ret_3y",
+    "ret_5y",
+]
