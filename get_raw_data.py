@@ -1,8 +1,6 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import random
-import time
 import json
 import os
 from pathlib import Path
@@ -25,22 +23,20 @@ TIME_WINDOWS = {
     "5y": 1254
 }
 
-WINDOW_STRIDE = 5
+WINDOW_STRIDE = 5 # How many days to skip between samples
 BATCH_SIZE = 20 # How many tickers to download at one time
 PERIOD = "15y" # Total length of data downloaded
-TICKER_COUNT = 10 # Number of symbols loaded (random sampling)
 MIN_ROWS = 3574 # How much data a ticker must have after removing bad values (5% loss)
 LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
-MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
-CHECKPOINT_EVERY_BATCHES = 10
+CHECKPOINT_EVERY_BATCHES = 10 # Number of batches to fetch between saving
 
-def ensure_data_directory():
-    # Create bath if it doesn't exist
+def ensure_data_directory() -> None:
+    # Create path if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
 
 def get_symbols() -> List[str]:
-    # Load tickers from file
+    # Load ticker symbols from file tickers JSON file
     try:
         with open( TICKERS_FILE, "r" ) as file:
             data = json.load( file )
@@ -58,81 +54,104 @@ def get_symbols() -> List[str]:
         print( f"Error: Invalid JSON in {TICKERS_FILE}" )
         return []
 
-def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd.DataFrame]:
-    # Download stock data from random sample of symbols
-    # Args:
-    #     symbols: List of ticker symbols to sample from
-    #     existing_df: DataFrame with already downloaded raw data
-    # Returns: Dataframe with stock prices or None if download fails
+def load_raw_data() -> pd.DataFrame:
+    # Load existing raw data from file, or return empty frame if none exists.
+        if os.path.isfile( RAW_FILE ):
+            print(f"Loading existing raw data from {RAW_FILE}...")
+            raw_df = pd.read_parquet(RAW_FILE)
+            print(f"  Loaded {len(raw_df['close'].columns)} tickers, {len(raw_df)} rows\n")
+            return raw_df
+        
+        print("No existing raw data found. New files created...")
+        return pd.DataFrame()
 
-    # Create list of symbols already downloaded
+def get_missing_symbols( all_symbols: List[str], existing_df: pd.DataFrame ) -> List[str]:
+    # Return sybols not already present in existing_df
     if not existing_df.empty:
         existing_tickers = set( existing_df["close"].columns )
     else:
-        existing_tickers = set()
+        existing_tickers = set() # TODO just return all_symbols here?
 
-    # Create list of symbols that need to be added
     symbols = [s for s in all_symbols if s not in existing_tickers]
+    return symbols
 
-    random.shuffle( symbols )
-    symbol_queue = list( symbols )
+def download_batch( batch: List[str] ) -> Optional[tuple[pd.DataFrame, pd.DataFrame]]:
+    # Download one batch of tickers. Returns close_df and volume_df, or None
+    try:
+        # Download batch
+        full_df = yf.download( batch, period=PERIOD, auto_adjust=True, progress=False )
+
+        # Guard for empty download
+        if full_df.empty:
+            print( f"Batch returned empty data" )
+            return None
+
+        close_df = full_df["Close"]
+        volume_df = full_df["Volume"]
+
+        # Guard for single series return instead of dataframe (only one result)
+        if isinstance( close_df, pd.Series ):
+            close_df = close_df.to_frame( name=batch[0])
+            volume_df = volume_df.to_frame( name=batch[0])
+
+        return close_df, volume_df
+
+    except Exception as e:
+        print( f"Batch failed: {e}" )
+        return None
+
+def filter_batch_tickers( close_df: pd.DataFrame, volume_df: pd.DataFrame, close_data: Dict[str, pd.Series], volume_data: Dict[str, pd.Series] ) -> int:
+    # Add tickers with enough rows from a downloaded batch into close_data/volume_data. Return number of tickers added from batch.
+
+    added = 0
+
+    for ticker in close_df.columns:             
+        series = close_df[ticker].dropna()
+
+        # Skip tickers without enough data
+        if len( series ) < MIN_ROWS:
+            print( f"    Skipping {ticker}: only {len(series)} rows ({MIN_ROWS} required)" )
+            continue
+
+        close_data[ticker] = series
+        volume_data[ticker] = volume_df[ticker].reindex( series.index )
+
+        added += 1
+        print( f"    + {ticker}: {len(series)} rows added ({len(close_data)} total" )
+
+    return added
+
+
+def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd.DataFrame]:
+    # Download stick data for symbols not already in existing_df
+
+    symbol_queue = get_missing_symbols( all_symbols, existing_df )
+    print( f"Starting download for the remaining {len(symbol_queue)} tickers..." )
     
-    close_data = {}
-    volume_data = {}
-
+    close_data: Dict[str, pd.Series] = {}
+    volume_data: Dict[str, pd.Series] = {}
     raw_df = existing_df
     batch_num = 0
-    
-    print( f"Starting download for the remaining { len(symbols) } tickers..." )
 
     # Loop through all available tickers
     while symbol_queue:
         # Seperate off current batch
         batch = symbol_queue[:BATCH_SIZE]
         symbol_queue = symbol_queue[BATCH_SIZE:]
-
-        added = 0
         batch_num += 1
 
-        try:
-            # Download batch
-            full_df = yf.download( batch, period=PERIOD, auto_adjust=True, progress=False )
+        result = download_batch( batch )
+        added = 0
 
-            # Guard for empty download
-            if full_df.empty:
-                print( f"Batch returned empty data" )
-                continue
-
-            close_df = full_df["Close"]
-            volume_df = full_df["Volume"]
-
-            # Guard for single series return instead of dataframe (only one result)
-            if isinstance( close_df, pd.Series ):
-                close_df = close_df.to_frame( name=batch[0])
-                volume_df = volume_df.to_frame( name=batch[0])
-
-            for ticker in close_df.columns:             
-                series = close_df[ticker].dropna()
-
-                # Skip tickers without enough data
-                if len( series ) < MIN_ROWS:
-                    print( f"    Skipping {ticker}: only {len(series)} rows ({MIN_ROWS} required)" )
-                    continue
-
-                close_data[ticker] = series
-                volume_data[ticker] = volume_df[ticker].reindex( series.index )
-
-                added += 1
-                print( f"    + {ticker}: {len(series)} rows added ({len(close_data)} total" )
-
-        except Exception as e:
-            print( f"Batch failed: {e}" )
+        if result is not None:
+            close_df, volume_df = result
+            added = filter_batch_tickers( close_df, volume_df, close_data, volume_data )
 
         print( f"    {added} of {len( batch )} tickers added. Current total is {len(close_data)}.")
 
         if close_data and batch_num % CHECKPOINT_EVERY_BATCHES == 0:
             raw_df = merge_and_save( existing_df, close_data, volume_data )
-            print( f"    -- checkpoint saved ({len(close_data)} new tickers so far) --" )
+            print( f"    -- Checkpoint saved ({len(close_data)} new tickers so far) --" )
 
     # Final save, whether or not we hit a checkpoint boundary
     if close_data:
@@ -160,6 +179,18 @@ def merge_and_save( existing_df: pd.DataFrame, close_data: dict, volume_data: di
 
     return merged
 
+def print_summary( raw_df: pd.DataFrame, start_time: datetime ) -> None:
+    # Print summary statistics for the completed run
+    duration = ( datetime.now() - start_time ).total_seconds()
+
+    print( "\n" + "=" * 60 )
+    print( "RAW DATA COMPLETE" )
+    print( "=" * 60 )
+    print( f"Output file: {RAW_FILE}" )
+    print( f"Total tickers: {len( raw_df['close'].columns ) - 1}" )
+    print( f"Duration: {duration:.1f} seconds" )
+    print( f"Memory usage: {raw_df.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
+
 def main():
     # Get starting time
     start_time = datetime.now()
@@ -169,29 +200,13 @@ def main():
 
     symbols = get_symbols()
 
-    # Get raw data
-    if os.path.isfile( RAW_FILE ):
-        print(f"Loading existing raw data from {RAW_FILE}...")
-        raw_df = pd.read_parquet(RAW_FILE)
-        print(f"  Loaded {len(raw_df['close'].columns)} tickers, {len(raw_df)} rows\n")
-    else:
-        print("No existing raw data found. New files created...")
-
-        # Download data
-        raw_df = pd.DataFrame()
-
-        # Confirm dataframe
-        if raw_df is None:
-            print( "Raw data download failed. Existing." )
-        
-        print( "Raw data download successful!\n" )
-
     # Guard for no symbols
     if not symbols:
         print("No symbols available. Exiting.")
         return
 
     # Download data for new symbols
+    raw_df = load_raw_data()
     raw_df = get_data( symbols, raw_df )
 
     # Make sure data was added
@@ -199,17 +214,7 @@ def main():
         print( "Raw data download unsucessful. No data found..." )
         return
     
-    # Summary statistics
-    end_time = datetime.now()
-    duration = ( end_time - start_time ).total_seconds()
-
-    print( "\n" + "=" * 60 )
-    print( "RAW DATA COMPLETE" )
-    print( "=" * 60 )
-    print( f"Output file: {RAW_FILE}" )
-    print( f"Total tickers: {len( raw_df['close'].columns ) - 1}" )
-    print( f"Duration: {duration:.1f} seconds" )
-    print( f"Memory usage: {raw_df.memory_usage( deep=True ).sum() / 1024**2:.1f} MB" )
+    print_summary( raw_df, start_time )
 
 if __name__ == "__main__":
     main()

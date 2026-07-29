@@ -1,12 +1,9 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import random
 import time
-import json
 import os
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from datetime import datetime
 
 # Files
@@ -14,7 +11,6 @@ RAW_FILE = "data/raw_data.parquet"
 INFO_FILE = "data/raw_info.parquet"
 STOCK_FILE = "data/data.parquet"
 SECTOR_FILE = "data/sector.parquet"
-TICKERS_FILE = "data/company_tickers.json"
 
 TIME_WINDOWS = {
     "1d": 1,
@@ -37,7 +33,7 @@ MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
 REQUEST_DELAY = 0.5
 CHECKPOINT_EVERY = 20
 
-def ensure_data_directory():
+def ensure_data_directory() -> None:
     # Create bath if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
 
@@ -57,10 +53,9 @@ def is_complete( row: pd.Series ) -> bool:
     return True
 
 def get_tickers() -> list:
+    # Load the ticker list from the raw price data
     if not os.path.isfile( RAW_FILE ):
-        raise FileNotFoundError(
-            f"{RAW_FILE} not found. Run the raw data download step first."
-        )
+        raise FileNotFoundError( f"{RAW_FILE} not found. Run the raw data download step first." )
     raw_df = pd.read_parquet( RAW_FILE )
     return list( raw_df["close"].columns )
 
@@ -74,7 +69,8 @@ def finite_float( value ) -> Optional[float]:
         return None
     return num
 
-def get_info( ticker:str ) -> dict: 
+def get_info( ticker:str ) -> dict:
+    # Fetch info for a single ticker from yfiance
     try:
         info = yf.Ticker( ticker ).info
 
@@ -101,7 +97,7 @@ def get_info( ticker:str ) -> dict:
         }
     
 def save_info( existing: pd.DataFrame, new_rows: list, refetch_tickers: set ) -> pd.DataFrame:
-    # Drop incomplete
+    # Merge newly fetched rows into the existing info cache and save to disk
     if not existing.empty and refetch_tickers:
         existing = existing[~existing["ticker"].isin( refetch_tickers )]
 
@@ -114,6 +110,59 @@ def save_info( existing: pd.DataFrame, new_rows: list, refetch_tickers: set ) ->
     combined = combined.drop_duplicates( subset="ticker", keep="last" ).reset_index( drop=True )
     combined.to_parquet( INFO_FILE )
     return combined
+
+def split_complete_incomplete( tickers: List[Str], existing: pd.DataFrame ) -> tuple:
+    # Split tickers into complete_tickers and to_fetch based on existing cache
+    complete_tickers: Set[str] = set()
+
+    if not existing.empty:
+        for _, row in existing.iterrows():
+            if is_complete( row ):
+                complete_tickers.add( row["ticker"] )
+
+    to_fetch = [t for t in tickers if t not in complete_tickers]
+    return complete_tickers, to_fetch
+
+def fetch_all( to_fetch: List[str], existing: pd.DataFrame ) -> tuple:
+    # Fetch info for all pending tickers, checkpointing periodically. Returns new_rows and combined_df.
+    new_rows = []
+    refetch_tickers = set( to_fetch )
+    combined = existing
+    
+    try:
+        for i, ticker in enumerate( to_fetch, 1 ):
+            print( f"  [{i}/{len(to_fetch)}] {ticker}" )
+            new_rows.append( get_info( ticker ) )
+            time.sleep( REQUEST_DELAY )
+
+            if i % CHECKPOINT_EVERY == 0:
+                combined = save_info( existing, new_rows, refetch_tickers )
+                print( f"    -- checkpoint saved ({len(new_rows)}/{len(to_fetch)} fetched) --" )
+    
+    finally:
+        combined = save_info( existing, new_rows, refetch_tickers )
+
+    return new_rows, combined
+
+def print_summary(
+        combined: pd.DataFrame,
+        new_rows: list,
+        to_fetch: list,
+        start_time: datetime
+) -> None:
+    duration = ( datetime.now() - start_time ).total_seconds()
+    fetched_ok = sum( 1 for r in new_rows if r["fetch_success"] )
+    
+    print( "\n" + "=" * 60 )
+    print( "INFO FETCH COMPLETE" )
+    print( "=" * 60 )
+    print( f"Output file: {INFO_FILE}" )
+    print( f"Total tickers cached: {len(combined)}" )
+    print( f"Fetched this run: {len(new_rows)} ({fetched_ok} succeeded, {len(new_rows) - fetched_ok} failed)" )
+    print( f"Duration: {duration:.1f} seconds" )
+    if len (new_rows ) < len( to_fetch ):
+        print( f"Run interrupted: {len( to_fetch ) - len(new_rows)} tickers not attempted. "
+               f"Re-run the script to continue." )
 
 def main():
     # Get starting time
@@ -129,48 +178,13 @@ def main():
     existing = load_existing_info()
 
     # Get complete and incomplete tickers
-    complete_tickers = set()
-    if not existing.empty:
-        for _, row in existing.iterrows():
-            if is_complete( row ):
-                complete_tickers.add( row["ticker"] )
-
-    to_fetch = [t for t in tickers if not t in complete_tickers]
+    complete_tickers, to_fetch = split_complete_incomplete( tickers, existing )
     incomplete_count = len( existing ) - len( complete_tickers ) if not existing.empty else 0
     print( f"{len(complete_tickers)} already complete, {incomplete_count} incomplete/failed, "
            f"{len(to_fetch)} to fetch this run\n")
     
-    new_rows = []
-    refetch_tickers = set( to_fetch )
-    combined = existing
-    try:
-        for i, ticker in enumerate( to_fetch, 1 ):
-            print( f"  [{i}/{len(to_fetch)}] {ticker}" )
-            new_rows.append( get_info( ticker ) )
-            time.sleep( REQUEST_DELAY )
-
-            if i % CHECKPOINT_EVERY == 0:
-                combined = save_info( existing, new_rows, refetch_tickers )
-                print( f"    -- checkpoint saved ({len(new_rows)}/{len(to_fetch)} fetched) --" )
-    
-    finally:
-        combined = save_info( existing, new_rows, refetch_tickers )
-
-    # Summary statistics
-    end_time = datetime.now()
-    duration = ( end_time - start_time ).total_seconds()
-    fetched_ok = sum( 1 for r in new_rows if r["fetch_success"] )
-    
-    print("\n" + "=" * 60)
-    print("INFO FETCH COMPLETE")
-    print("=" * 60)
-    print(f"Output file: {INFO_FILE}")
-    print(f"Total tickers cached: {len(combined)}")
-    print(f"Fetched this run: {len(new_rows)} ({fetched_ok} succeeded, {len(new_rows) - fetched_ok} failed)")
-    print(f"Duration: {duration:.1f} seconds")
-    if len(new_rows) < len(to_fetch):
-        print(f"Run interrupted: {len(to_fetch) - len(new_rows)} tickers not attempted. "
-              f"Just re-run the script to continue.")
+    new_rows, combined = fetch_all( to_fetch, existing )
+    print_summary( combined, new_rows, to_fetch, start_time )
 
 if __name__ == "__main__":
     main()
