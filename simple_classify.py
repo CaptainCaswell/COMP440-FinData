@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import argparse
 from pathlib import Path
 from typing import Optional
 
@@ -26,15 +27,35 @@ from sklearn.metrics import (
 STOCK_FILE = "data/data.parquet"
 LOG_FOLDER = "logs/simple_classification"
 
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--horizon",
+    default=None,
+    help="Run only this horizon (ex: '5y'). If omitted, run all horizons."
+)
+
 DEFAULT_HORIZONS = [
-    "1d",
-    "1w",
-    "1m",
-    "6m",
-    "1y",
-    "3y",
-    "5y"
-]
+        "1d",
+        "1w",
+        "1m",
+        "6m",
+        "1y",
+        "3y",
+        "5y"
+    ]
+
+# Parser for single horizons (Slurm)
+args = parser.parse_args()
+
+if args.horizon is not None:
+    if args.horizon not in DEFAULT_HORIZONS:
+        parser.error( f"Invalid horizon '{args.horizon}" 
+                      f"Choose from: {DEFAULT_HORIZONS}"
+        )
+
+    HORIZONS = [args.horizon]
+else:
+    HORIZONS = DEFAULT_HORIZONS
 
 RANDOM_STATE = 42
 TEST_FRACTION = 0.2
@@ -61,13 +82,6 @@ class Tee:
                 s.flush()
             except (OSError, ValueError, io.UnsupportedOperation):
                 pass
-
-
-def get_horizons() -> Optional[list]:
-    if len( sys.argv ) > 1:
-        return [sys.argv[1]]
-
-    return DEFAULT_HORIZONS
 
 
 def ensure_log_directory():
@@ -409,7 +423,7 @@ def main():
         )
     ]
 
-    for horizon in get_horizons():
+    for horizon in HORIZONS:
         print( "\n" + "=" * 80 )
         print( f"Running Horizon: {horizon}")
         print( "\n" + "=" * 80 )
