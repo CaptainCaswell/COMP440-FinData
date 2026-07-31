@@ -24,11 +24,11 @@ from sklearn.metrics import (
 FEATURES = [
     "ret_1d",
     "ret_1w",
-    "ret_1m",
-    "ret_6m",
-    "ret_1y",
-    "ret_3y",
-    "ret_5y",
+    #"ret_1m",
+    #"ret_6m",
+    #"ret_1y",
+    #"ret_3y",
+    #"ret_5y",
 ]
 
 # Files
@@ -243,22 +243,22 @@ def save_stock_selections(
 
     scored = test_df.copy()
     scored["pred_proba"] = proba
-    scored["predicited_label"] = pred
+    scored["predicted_label"] = pred
     scored = scored.sort_values( "pred_proba", ascending=False ).reset_index( drop=True)
 
     cols = [c for c in ["ticker", "date", "pred_proba", "predicted_label", label_source_col] if c in scored.columns]
 
     base_filename = f"{LOG_FOLDER}/{horizon}_{clean_name( name )}"
 
-    n_top = min( TOP_N, len( scored ) )
+    n_top = min( top_n, len( scored ) )
     top_df = scored.iloc[:n_top]
-    top_df[cols].to_csv( f"{base_filename}_top{TOP_N}.csv", index=False )
+    top_df[cols].to_csv( f"{base_filename}_top{top_n}.csv", index=False )
 
     n_decile = max( 1, int( len(scored) * top_frac ) )
     decile_df = scored.iloc[:n_decile]
     decile_df[cols].to_csv( f"{base_filename}_top{top_frac:.0%}.csv")
 
-    winners_df = scored[scored["prediced_label"] == 1]
+    winners_df = scored[scored["predicted_label"] == 1]
     winners_df[cols].to_csv( f"{base_filename}_all.csv")
 
     print( f"\nSaved selections for {name} @ {horizon}: "
@@ -411,7 +411,7 @@ def bootstrap_ci( y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray, n
     }
 
 def main():
-    setup_logging()
+    # setup_logging()
 
     df_all = load_data()
     print( f"Load {len( df_all ):,} rows, {df_all['ticker'].nunique()} tickers\n" )
