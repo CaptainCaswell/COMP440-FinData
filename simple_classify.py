@@ -5,8 +5,6 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
-from classify_features import SIMPLE_FEATURES as FEATURES
-
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
@@ -23,9 +21,19 @@ from sklearn.metrics import (
     f1_score
 )
 
+FEATURES = [
+    "ret_1d",
+    "ret_1w",
+    "ret_1m",
+    "ret_6m",
+    "ret_1y",
+    "ret_3y",
+    "ret_5y",
+]
+
 # Files
 STOCK_FILE = "data/data.parquet"
-LOG_FOLDER = "logs/simple_classification"
+LOG_FOLDER = "logs/classification"
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -62,6 +70,7 @@ TEST_FRACTION = 0.2
 GAP_DAYS = 252
 
 TOP_DECILE = 0.05   # fraction of highest-confidence test predictions to profile
+TOP_N = 20
 
 REMOVE_ETFS = True
 
@@ -117,19 +126,15 @@ def select_feature_columns( df: pd.DataFrame ) -> list:
     return [col for col in FEATURES if col in df.columns]
 
 
-def prepare_features( df: pd.DataFrame, feature_cols: list ) -> tuple:
+def prepare_features( df: pd.DataFrame, feature_cols: list ) -> pd.DataFrame:
     features = df[feature_cols].copy()
-    medians = {}
 
-    for col in features.columns:
-        median_val = features[col].median()
-        medians[col] = median_val
-        n_missing = features[col].isna().sum()
-        if n_missing > 0:
-            print( f"Imputing {n_missing} missing values in '{col}' with median ({median_val:.4f})" )
-        features[col] = features[col].fillna( median_val )
+    n_missing = features.isna().sum()
 
-    return features, medians
+    if n_missing.any():
+        raise ValueError( f"Missing feature values found (no imputation performed)" )
+
+    return features
 
 # def preapare_test_features( test_df: pd.DataFrame, feature_cols: list, medians: dict ) -> pd.DataFrame:
 #     test_features = test_df.reindex( columns=feature_cols, fill_value=0 ).copy()
@@ -223,6 +228,44 @@ def profile_top_decile( name: str, test_df: pd.DataFrame, y_proba: np.ndarray, l
 
     return top
 
+
+def save_stock_selections(
+    horizon: str,
+    name: str,
+    test_df: pd.DataFrame,
+    pred: np.ndarray,
+    proba: np.ndarray,
+    label_source_col: str,
+    top_n: int = TOP_N,
+    top_frac: float = TOP_DECILE
+) -> None:
+    # Saves stock selection information
+
+    scored = test_df.copy()
+    scored["pred_proba"] = proba
+    scored["predicited_label"] = pred
+    scored = scored.sort_values( "pred_proba", ascending=False ).reset_index( drop=True)
+
+    cols = [c for c in ["ticker", "date", "pred_proba", "predicted_label", label_source_col] if c in scored.columns]
+
+    base_filename = f"{LOG_FOLDER}/{horizon}_{clean_name( name )}"
+
+    n_top = min( TOP_N, len( scored ) )
+    top_df = scored.iloc[:n_top]
+    top_df[cols].to_csv( f"{base_filename}_top{TOP_N}.csv", index=False )
+
+    n_decile = max( 1, int( len(scored) * top_frac ) )
+    decile_df = scored.iloc[:n_decile]
+    decile_df[cols].to_csv( f"{base_filename}_top{top_frac:.0%}.csv")
+
+    winners_df = scored[scored["prediced_label"] == 1]
+    winners_df[cols].to_csv( f"{base_filename}_all.csv")
+
+    print( f"\nSaved selections for {name} @ {horizon}: "
+           f"top {len( top_df )}, top {top_frac:.0%} ({len( decile_df )}), "
+           f"all predicted winners ({len( winners_df )})" )
+
+
 def clean_name( name: str ) -> str:
     # cleans name of model for file/column use
     return name.lower().replace( " ", "_" )
@@ -268,7 +311,7 @@ def run_model(
     print(f"  ROC-AUC:   [{ci['auc_ci'][0]:.4f}, {ci['auc_ci'][1]:.4f}]")
 
     profile_top_decile( name, test_df, proba, label_source_col, label_col )
-    print_top_stocks_by_freq( name, test_df, proba, label_source_col )
+    save_stock_selections( horizon, name, test_df, pred, proba, label_source_col )
 
     ranking = get_feature_ranking( estimator, feature_cols )
 
@@ -447,9 +490,9 @@ def main():
         print( f"Test  beat-market rate: {test_df[label_col].mean():.2%}\n" )
 
         feature_cols = select_feature_columns( train_df )
-        train_features, _ = prepare_features( train_df, feature_cols )
 
-        test_features = test_df.reindex( columns=feature_cols, fill_value=0 ).copy()
+        train_features = prepare_features( train_df, feature_cols )
+        test_features = prepare_features( test_df, feature_cols )
 
         scaler = StandardScaler()
         train_scaled = scaler.fit_transform( train_features )
