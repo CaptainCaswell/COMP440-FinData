@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=classify
-#SBATCH --output=logs/classify_%A_%a.out
+#SBATCH --output=logs/slurm/classify_%A_%a.out
 #SBATCH --array=0-6
 #SBATCH --time=01:00:00
 
