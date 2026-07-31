@@ -1,8 +1,6 @@
 /__pycache__
 /.venv
-/logs
-/data
-*.csv
 *.out
 *.parquet
 *.joblib
+*.csv
