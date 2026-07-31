@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=classify_combine
-#SBATCH --output=logs/classify_combine_%j.out
+#SBATCH --output=logs/slurm/classify_combine_%j.out
 #SBATCH --time=00:10:00
 
 source .venv/bin/activate
