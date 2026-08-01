@@ -5,4 +5,4 @@
 
 source .venv/bin/activate
 
-python -u combine_classification.py
+python -u combine.py
