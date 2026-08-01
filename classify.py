@@ -5,8 +5,10 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+import joblib
 import pandas as pd
 import numpy as np
+from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -34,6 +36,7 @@ FEATURES = [
 # Files
 STOCK_FILE = "data/data.parquet"
 LOG_FOLDER = "logs/classification"
+MODEL_FOLDER = f"{LOG_FOLDER}/models"
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -256,10 +259,10 @@ def save_stock_selections(
 
     n_decile = max( 1, int( len(scored) * top_frac ) )
     decile_df = scored.iloc[:n_decile]
-    decile_df[cols].to_csv( f"{base_filename}_top{top_frac:.0%}.csv")
+    decile_df[cols].to_csv( f"{base_filename}_top{top_frac:.0%}.csv", index=False)
 
     winners_df = scored[scored["predicted_label"] == 1]
-    winners_df[cols].to_csv( f"{base_filename}_all.csv")
+    winners_df[cols].to_csv( f"{base_filename}_all.csv", index=False )
 
     print( f"\nSaved selections for {name} @ {horizon}: "
            f"top {len( top_df )}, top {top_frac:.0%} ({len( decile_df )}), "
@@ -291,11 +294,15 @@ def run_model(
         test_df: pd.DataFrame,
         feature_cols: list,
         label_source_col,
-        label_col
+        label_col,
+        scaler,
+        use_scaled: bool
 ) -> dict:
     # Fits, evaluated, profiles, and saves one model
     print( f"\nFitting {name}..." )
     estimator.fit( X_train, y_train )
+
+    save_model( horizon, name, estimator, scaler, use_scaled )
 
     pred = estimator.predict( X_test )
     proba = estimator.predict_proba( X_test )[:, 1]
@@ -410,6 +417,20 @@ def bootstrap_ci( y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray, n
         "auc_ci": ci( aucs )
     }
 
+
+def save_model( horizon: str, name: str, estimator, scaler, use_scaled: bool ) -> None:
+    Path( MODEL_FOLDER ).mkdir( parents=True, exist_ok=True )
+
+    pipeline = Pipeline( [
+        ( "scaler", scaler if use_scaled else "passthrough" ),
+        ( "clf", estimator )
+    ])
+
+    path = f"{MODEL_FOLDER}/{horizon}_{clean_name( name )}.joblib"
+    joblib.dump( pipeline, path )
+    print( f"Saved model pipeline: {path}")
+
+
 def main():
     # setup_logging()
 
@@ -507,7 +528,7 @@ def main():
             X_train = train_scaled if use_scaled else train_features
             X_test = test_scaled if use_scaled else test_features
 
-            outcome = run_model( horizon, name, estimator, X_train, X_test, y_train, y_test, test_df, feature_cols, label_source_col, label_col )
+            outcome = run_model( horizon, name, estimator, X_train, X_test, y_train, y_test, test_df, feature_cols, label_source_col, label_col, scaler, use_scaled )
 
             horizon_results.append( outcome["result"] )
 
