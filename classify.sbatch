@@ -8,4 +8,4 @@ HORIZONS=("1d" "1w" "1m" "6m" "1y" "3y" "5y")
 
 source .venv/bin/activate
 
-python -u simple_classify.py --horizon ${HORIZONS[$SLURM_ARRAY_TASK_ID]}
+python -u classify.py --horizon ${HORIZONS[$SLURM_ARRAY_TASK_ID]}
