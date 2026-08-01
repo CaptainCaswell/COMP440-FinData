@@ -26,7 +26,7 @@ TIME_WINDOWS = {
 WINDOW_STRIDE = 5 # How many days to skip between samples
 BATCH_SIZE = 20 # How many tickers to download at one time
 PERIOD = "15y" # Total length of data downloaded
-MIN_ROWS = 3574 # How much data a ticker must have after removing bad values (5% loss)
+MIN_ROWS = 1000 # How much data a ticker must have after removing bad values (5% loss)
 LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
 FUTURE_DAYS = 1254 # 5 years
 CHECKPOINT_EVERY_BATCHES = 10 # Number of batches to fetch between saving
@@ -117,7 +117,7 @@ def filter_batch_tickers( close_df: pd.DataFrame, volume_df: pd.DataFrame, close
         volume_data[ticker] = volume_df[ticker].reindex( series.index )
 
         added += 1
-        print( f"    + {ticker}: {len(series)} rows added ({len(close_data)} total" )
+        print( f"    + {ticker}: {len(series)} rows added ({len(close_data)} total)" )
 
     return added
 
