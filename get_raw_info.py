@@ -2,12 +2,14 @@ import yfinance as yf
 import pandas as pd
 import time
 import os
+import argparse
 from pathlib import Path
 from typing import List, Dict, Optional, Set
 from datetime import datetime
 
 # Files
 RAW_FILE = "data/raw_data.parquet"
+SNAPSHOT_RAW_FILE = "data/raw_snapshot.parquet"
 INFO_FILE = "data/raw_info.parquet"
 STOCK_FILE = "data/data.parquet"
 SECTOR_FILE = "data/sector.parquet"
@@ -33,6 +35,14 @@ MIN_WINDOWS = 500 # Minimum number of rolling windows for a ticker
 REQUEST_DELAY = 0.5
 CHECKPOINT_EVERY = 20
 
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--snapshot",
+    action="store_true",
+    help="Fetch info for tickers in the snapshot raw file instead of training raw file"
+)
+args = parser.parse_args()
+
 def ensure_data_directory() -> None:
     # Create bath if it doesn't exist
     Path( "data" ).mkdir( exist_ok=True )
@@ -52,11 +62,11 @@ def is_complete( row: pd.Series ) -> bool:
         return False
     return True
 
-def get_tickers() -> list:
+def get_tickers( raw_file: str ) -> list:
     # Load the ticker list from the raw price data
-    if not os.path.isfile( RAW_FILE ):
-        raise FileNotFoundError( f"{RAW_FILE} not found. Run the raw data download step first." )
-    raw_df = pd.read_parquet( RAW_FILE )
+    if not os.path.isfile( raw_file ):
+        raise FileNotFoundError( f"{raw_file} not found. Run the raw data download step first." )
+    raw_df = pd.read_parquet( raw_file )
     return list( raw_df["close"].columns )
 
 def finite_float( value ) -> Optional[float]:
@@ -171,9 +181,11 @@ def main():
 
     ensure_data_directory()
 
+    raw_file = SNAPSHOT_RAW_FILE if args.snapshot else RAW_FILE
+
     # Get tickers from raw data
-    tickers = get_tickers()
-    print(f"Found {len(tickers)} tickers in {RAW_FILE}")
+    tickers = get_tickers( raw_file )
+    print(f"Found {len(tickers)} tickers in {raw_file}")
 
     existing = load_existing_info()
 
