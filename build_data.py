@@ -77,12 +77,8 @@ def get_info( ticker: str, info_map: dict ) -> dict:
 
 
 def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optional[pd.DataFrame]:
-    min_length = LOOKBACK_DAYS + FUTURE_DAYS + MIN_WINDOWS
 
     series = series.dropna().sort_index()
-
-    if len( series ) < min_length:
-        return None
 
     df = pd.DataFrame( index=series.index )
     df["ticker"] = ticker
@@ -90,10 +86,6 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
 
     # Remove improbable prices
     df = df[( df["price"] >= MIN_PRICE ) & ( df["price"] <= MAX_PRICE )]
-
-    # Remove tickers without enough data
-    if len( df ) < min_length:
-        return None
 
     # Check for anomolous price changes
     daily_ret = df["price"].pct_change()
@@ -132,8 +124,11 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
         # Excess return vs SPY
         df[f"future_excess_{label}"] = future_ret - spy_future
 
-    # Clean
-    df = df.iloc[LOOKBACK_DAYS:-FUTURE_DAYS]
+    # Remove rows without required features/targets
+    required_cols = [f"ret_{label}" for label in TIME_WINDOWS]
+    required_cols = [f"future_excess_" for label in TIME_WINDOWS]
+
+    df = df.dropna( subset=required_cols )
 
     # Drop if core stats not available
     core_cols = ["price"]
@@ -162,7 +157,7 @@ def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
 
     for i, ticker in enumerate( close.columns, 1 ):
         try:
-            df = process_ticker( ticker, close[ticker], volume[ticker], info_map, spy_future_returns )
+            df = process_ticker( ticker, close[ticker], volume[ticker] )
         except Exception as e:
             print( f"    [{i}/{total}] {ticker}: FAILED ({e})" )
             continue
