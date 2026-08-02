@@ -1,6 +1,6 @@
 import yfinance as yf
 import pandas as pd
-import random
+import time
 import json
 import os
 from pathlib import Path
@@ -25,6 +25,7 @@ TIME_WINDOWS = {
 
 WINDOW_STRIDE = 5 # How many days to skip between samples
 BATCH_SIZE = 20 # How many tickers to download at one time
+BATCH_DELAY = 3 # Delay between catches at avoid rate limiting
 PERIOD = "15y" # Total length of data downloaded
 MIN_ROWS = 1000 # How much data a ticker must have after removing bad values (5% loss)
 LOOKBACK_DAYS = max( TIME_WINDOWS.values() ) # Longest time window
@@ -152,6 +153,9 @@ def get_data( all_symbols: List[str], existing_df: pd.DataFrame ) -> Optional[pd
         if close_data and batch_num % CHECKPOINT_EVERY_BATCHES == 0:
             raw_df = merge_and_save( existing_df, close_data, volume_data )
             print( f"    -- Checkpoint saved ({len(close_data)} new tickers so far) --" )
+
+        if symbol_queue:
+            time.sleep( BATCH_DELAY )
 
     # Final save, whether or not we hit a checkpoint boundary
     if close_data:
