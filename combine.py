@@ -1,7 +1,7 @@
 from pathlib import Path
 import pandas as pd
 
-INPUT_DIR = Path( "logs/classification" )
+INPUT_DIR = Path( "logs/classification/ranking" )
 
 TYPE = [
     "model_comparison",
