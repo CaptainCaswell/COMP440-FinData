@@ -99,7 +99,7 @@ def get_info( ticker:str ) -> dict:
         return {
             "ticker": ticker,
             "sector": "Unknown",
-            "quote_type": info.get( "quoteType" ),
+            "quote_type": "UNKNOWN",
             "shares_outstanding": None,
             "trailing_pe": None,
             "fetch_success": False,
