@@ -66,7 +66,7 @@ def get_info( ticker: str, info_map: dict ) -> dict:
     } )
 
 
-def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optional[pd.DataFrame]:
+def process_ticker( ticker: str, series: pd.Series, volume: pd.Series, target_date: pd.Timestamp ) -> Optional[pd.DataFrame]:
     # Same price-quality checks as build_data.py's process_ticker, but keeps only
     # the most recent valid row and skips everything future-return related.
 
@@ -108,7 +108,7 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
         df[f"ret_{label}"] = df["price"].pct_change( span )
 
     # Keep only the most recent row - the one we're predicting on
-    latest = df.tail( 1 )
+    latest = df.loc[[target_date]]
 
     # Drop it if any trailing window couldn't be computed (not enough history yet)
     required_cols = [f"ret_{label}" for label in TIME_WINDOWS]
@@ -124,6 +124,9 @@ def build_snapshot( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
     global INFO_MAP
     INFO_MAP = info_map
 
+    target_date = close.index.max()
+    print( f'Snapshot date: {target_date.date()}' )
+
     df_list = []
     total = len( close.columns )
 
@@ -131,7 +134,7 @@ def build_snapshot( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
 
     for i, ticker in enumerate( close.columns, 1 ):
         try:
-            df = process_ticker( ticker, close[ticker], volume[ticker] )
+            df = process_ticker( ticker, close[ticker], volume[ticker], target_date )
         except Exception as e:
             print( f"    [{i}/{total}] {ticker}: FAILED ({e})" )
             continue

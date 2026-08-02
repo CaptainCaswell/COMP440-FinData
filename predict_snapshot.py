@@ -19,7 +19,7 @@ MODELS = ["logistic_regression", "random_forest", "gradient_boosting", "mlpclass
 
 SNAPSHOT_FILE = "data/snapshot.parquet"   # recent feature data, one row per ticker
 MODEL_FOLDER = "logs/classification/models"
-OUT_FOLDER = "logs/classification/snapshot_predictions"
+OUT_FOLDER = "logs/classification/"
 TOP_N = 20
 REMOVE_ETFS = True
 
@@ -51,7 +51,7 @@ def load_snapshot() -> pd.DataFrame:
 
 
 def predict_horizon(horizon: str, snapshot: pd.DataFrame) -> None:
-    Path( OUT_FOLDER ).mkdir( parents=True, exist_ok=True )
+    results = []
 
     for model_name in MODELS:
         model_path = f"{MODEL_FOLDER}/{horizon}_{model_name}.joblib"
@@ -66,25 +66,39 @@ def predict_horizon(horizon: str, snapshot: pd.DataFrame) -> None:
         pred = pipeline.predict(X)
 
         scored = snapshot[["ticker", "date"]].copy()
+        scored["horizon"] = horizon
+        scored["model"] = model_name
         scored["pred_proba"] = proba
         scored["predicted_label"] = pred
-        scored = scored.sort_values( "pred_proba", ascending=False ).reset_index( drop=True )
 
-        all_path = f"{OUT_FOLDER}/{horizon}_{model_name}_snapshot_all.csv"
-        scored.head( TOP_N ).to_csv( all_path, index=False)
-
-        top_path = f"{OUT_FOLDER}/{horizon}_{model_name}_snapshot_top{TOP_N}.csv"
-        scored.head( TOP_N ).to_csv( top_path, index=False)
+        results.append( scored )
         
-        print( f"Saved for {model_name} @ {horizon}" )
+        print( f"Predicted {model_name} @ {horizon}" )
+
+    return results
 
 
 def main():
+    Path( OUT_FOLDER ).mkdir( parents=True, exist_ok=True )
+
     snapshot = load_snapshot()
     print( f"Snapshot: {len(snapshot)} tickers as of {snapshot['date'].max()}" )
 
+    all_results = []
+
     for horizon in HORIZONS:
-        predict_horizon( horizon, snapshot )
+        all_results.extend( predict_horizon( horizon, snapshot ) )
+
+    if not all_results:
+        print( "No models found to predct with - check MODEL_FOLDER" )
+        return
+
+    predictions = pd.concat( all_results, ignore_index=True )
+    predictions = predictions.sort_values( ["horizon", "model", "pred_proba"], ascending=[True, True, False] ).reset_index( drop = True )
+
+    out_path = f"{OUT_FOLDER}/snapshot_predictions.csv"
+    predictions.to_csv( out_path, index=False )
+    print( f"saved {len( predictions )} predictions to {out_path}.")
 
 
 if __name__ == "__main__":
