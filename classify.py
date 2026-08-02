@@ -378,8 +378,6 @@ def main():
     df_all = load_data()
     print( f"Load {len( df_all ):,} rows, {df_all['ticker'].nunique()} tickers\n" )
 
-    all_results = []
-
     model_specs = [
         (
             "Logistic Regression",
@@ -473,7 +471,7 @@ def main():
 
             horizon_results.append( outcome["result"] )
 
-        results_df = pd.DataFrame( all_results )
+        results_df = pd.DataFrame( horizon_results )
         results_df.to_csv( f"{LOG_FOLDER}/ranking/{horizon}_model_comparison.csv", index=False )
 
     print( "\n" + "=" * 80 )

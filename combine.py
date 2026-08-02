@@ -9,6 +9,8 @@ TYPE = [
     "random_forest_importances"
 ]
 
+HORIZONS = ["1d", "1w", "1m", "6m", "1y", "3y", "5y"]
+
 for name in TYPE:
 
     dfs = []
@@ -22,7 +24,7 @@ for name in TYPE:
         if df.columns[0].startswith( "Unnamed" ) or df.columns[0] == "":
             df = df.drop( columns=df.columns[0] )
 
-        horizon = file.stem.repalce( f"_{name}", "" )
+        horizon = file.stem.replace( f"_{name}", "" )
         df["horizon"] = horizon
 
         dfs.append( df )
