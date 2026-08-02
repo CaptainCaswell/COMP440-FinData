@@ -232,43 +232,6 @@ def profile_top_decile( name: str, test_df: pd.DataFrame, y_proba: np.ndarray, l
     return top
 
 
-def save_stock_selections(
-    horizon: str,
-    name: str,
-    test_df: pd.DataFrame,
-    pred: np.ndarray,
-    proba: np.ndarray,
-    label_source_col: str,
-    top_n: int = TOP_N,
-    top_frac: float = TOP_DECILE
-) -> None:
-    # Saves stock selection information
-
-    scored = test_df.copy()
-    scored["pred_proba"] = proba
-    scored["predicted_label"] = pred
-    scored = scored.sort_values( "pred_proba", ascending=False ).reset_index( drop=True)
-
-    cols = [c for c in ["ticker", "date", "pred_proba", "predicted_label", label_source_col] if c in scored.columns]
-
-    base_filename = f"{LOG_FOLDER}/stocks/{horizon}_{clean_name( name )}"
-
-    n_top = min( top_n, len( scored ) )
-    top_df = scored.iloc[:n_top]
-    top_df[cols].to_csv( f"{base_filename}_top{top_n}.csv", index=False )
-
-    n_decile = max( 1, int( len(scored) * top_frac ) )
-    decile_df = scored.iloc[:n_decile]
-    decile_df[cols].to_csv( f"{base_filename}_top{top_frac:.0%}.csv", index=False)
-
-    winners_df = scored[scored["predicted_label"] == 1]
-    winners_df[cols].to_csv( f"{base_filename}_all.csv", index=False )
-
-    print( f"\nSaved selections for {name} @ {horizon}: "
-           f"top {len( top_df )}, top {top_frac:.0%} ({len( decile_df )}), "
-           f"all predicted winners ({len( winners_df )})" )
-
-
 def clean_name( name: str ) -> str:
     # cleans name of model for file/column use
     return name.lower().replace( " ", "_" )
@@ -318,7 +281,6 @@ def run_model(
     print(f"  ROC-AUC:   [{ci['auc_ci'][0]:.4f}, {ci['auc_ci'][1]:.4f}]")
 
     profile_top_decile( name, test_df, proba, label_source_col, label_col )
-    save_stock_selections( horizon, name, test_df, pred, proba, label_source_col )
 
     ranking = get_feature_ranking( estimator, feature_cols )
 
@@ -326,20 +288,10 @@ def run_model(
         ranking_kind = "coefficient" if "coefficient" in ranking.columns else "importance"
         print( f"\n{name} feature {ranking_kind}s:" )
         print( ranking.to_string( index=False ) )
-        ranking.to_csv( f"{LOG_FOLDER}/{horizon}_{clean_name( name )}_{ranking_kind}s.csv" )
+        ranking.to_csv( f"{LOG_FOLDER}/ranking/{horizon}_{clean_name( name )}_{ranking_kind}s.csv" )
 
     return {"result": result, "pred": pred, "proba": proba }
 
-# def print_top_predictions( name: str, test_df: pd.DataFrame, proba: np.ndarray, label_source_col: str, horizon: str, n: int = 10 ) -> None:
-#     # Print the top n stocks the model is most confident will beat the market
-#     scored = test_df.copy()
-#     scored["pred_proba"] = proba
-#     scored = scored.sort_values( "pred_proba", ascending=False )
-#     scored = scored.drop_duplicates(subset="ticker", keep="first" ).reset_index( drop=True )
-
-#     top = scored.head( n )
-#     print( f"\n{horizon} - {name} - top {n} predicted stocks:" )
-#     print( top[["ticker", "date", "pred_proba", label_source_col]].to_string( index=False ) )
 
 def print_top_stocks_by_freq(
         name: str,
@@ -374,17 +326,6 @@ def print_top_stocks_by_freq(
 
     print( top.to_string() )
 
-# def print_summary( results, scored_df ) -> None:
-#     results_df = pd.DataFrame(results)
-#     print(f"\n{'='*60}\nMODEL COMPARISON\n{'='*60}")
-#     print(results_df.to_string(index=False))
-
-#     results_df.to_csv(f"{LOG_FOLDER}/model_comparison.csv", index=False)
-#     scored_df.to_parquet(f"{LOG_FOLDER}/test_scored.parquet", index=False)
-
-#     print("\n" + "=" * 60)
-#     print("CLASSIFICATION RUN COMPLETE")
-#     print("=" * 60)
 
 def bootstrap_ci( y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray, n_boot:int = 1000, seed: int = RANDOM_STATE ) -> dict:
     # Bootstrap confidence intervals for accuary, precision, recall, f1 score, and AUC
@@ -533,7 +474,7 @@ def main():
             horizon_results.append( outcome["result"] )
 
         results_df = pd.DataFrame( all_results )
-        results_df.to_csv( f"{LOG_FOLDER}/{horizon}_model_comparison.csv", index=False )
+        results_df.to_csv( f"{LOG_FOLDER}/ranking/{horizon}_model_comparison.csv", index=False )
 
     print( "\n" + "=" * 80 )
     print( "FINAL HORIZON COMPARISON" )
