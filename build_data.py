@@ -108,8 +108,9 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
     # Info
     info = get_info( ticker, INFO_MAP )
     df["quote_type"] = info["quote_type"]
+    df["sector"] = info["sector"]
 
-    # ReturnsS
+    # Returns
     for label, span in TIME_WINDOWS.items():
         df[f"ret_{label}"] = df["price"].pct_change( span )
 
@@ -125,8 +126,7 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
         df[f"future_excess_{label}"] = future_ret - spy_future
 
     # Remove rows without required features/targets
-    required_cols = [f"ret_{label}" for label in TIME_WINDOWS]
-    required_cols = [f"future_excess_" for label in TIME_WINDOWS]
+    required_cols = [f"ret_{label}" for label in TIME_WINDOWS] + [f"future_excess_{label}" for label in TIME_WINDOWS]
 
     df = df.dropna( subset=required_cols )
 
@@ -139,6 +139,9 @@ def process_ticker( ticker: str, series: pd.Series, volume: pd.Series ) -> Optio
 
 def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) -> pd.DataFrame:
     # Build data feature matrix from raw price data
+    global INFO_MAP, SPY_FUTURE_RETURNS
+
+    INFO_MAP = info_map
 
     spy_price = close["SPY"]
 
@@ -146,6 +149,8 @@ def build_features( close: pd.DataFrame, volume: pd.DataFrame, info_map: dict ) 
 
     for label, span in TIME_WINDOWS.items():
         spy_future_returns[label] = ( spy_price.shift( -span ) / spy_price - 1 )
+
+    SPY_FUTURE_RETURNS = spy_future_returns
 
     stride_dates = set( close.index[::WINDOW_STRIDE] )
 

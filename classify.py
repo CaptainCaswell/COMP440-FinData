@@ -108,7 +108,7 @@ def setup_logging() -> None:
 def load_data() -> pd.DataFrame:
     # Loads dataset
     if not os.path.isfile( STOCK_FILE ):
-        raise FileNotFoundError( f"{STOCK_FILE} not found. Run build_dataset.py first." )
+        raise FileNotFoundError( f"{STOCK_FILE} not found. Run build_data.py first." )
 
     df = pd.read_parquet( STOCK_FILE )
 
