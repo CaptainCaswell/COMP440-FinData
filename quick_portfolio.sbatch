@@ -8,8 +8,6 @@ source .venv/bin/activate
 
 mkdir -p logs/slurm
 
-set -e
-
 echo "=== get_snapshot.py started at $(date) ==="
 python -u get_snapshot.py
 
